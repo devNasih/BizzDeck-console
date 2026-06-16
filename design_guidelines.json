@@ -1,0 +1,140 @@
+{
+  "theme_and_archetype": {
+    "theme": "light",
+    "archetype": "Archetype 4 (Swiss & High-Contrast) blended with Archetype 1 (Organic & Earthy)",
+    "description": "An elegant, high-end SaaS design blending authoritative clarity with trustworthy, organic hues (Dark Teal and Mint Green). Employs high-contrast typography, bento grids, and generous spacing to avoid the generic AI SaaS look."
+  },
+  "colors": {
+    "background": "hsl(150, 20%, 98%)",
+    "background_alt": "hsl(0, 0%, 100%)",
+    "text_primary": "hsl(185, 80%, 10%)",
+    "text_secondary": "hsl(185, 30%, 40%)",
+    "text_inverse": "hsl(0, 0%, 100%)",
+    "text_inverse_secondary": "hsl(185, 20%, 80%)",
+    "primary_teal": "hsl(185, 100%, 15%)",
+    "primary_teal_hover": "hsl(185, 100%, 20%)",
+    "accent_mint": "hsl(150, 100%, 80%)",
+    "accent_mint_hover": "hsl(150, 100%, 75%)",
+    "accent_mint_muted": "hsl(150, 40%, 90%)",
+    "border": "hsl(185, 20%, 90%)",
+    "border_dark": "hsl(185, 20%, 25%)"
+  },
+  "typography": {
+    "font_heading": "Cabinet Grotesk, sans-serif",
+    "font_body": "Manrope, sans-serif",
+    "rules": {
+      "h1": "text-5xl sm:text-6xl tracking-tighter leading-none font-black",
+      "h2": "text-4xl sm:text-5xl tracking-tight leading-tight font-bold",
+      "h3": "text-2xl sm:text-3xl tracking-tight leading-snug font-bold",
+      "body": "text-base sm:text-lg leading-relaxed text-secondary",
+      "overline": "text-xs uppercase tracking-[0.2em] font-bold"
+    }
+  },
+  "spacing_and_layout": {
+    "general": "Generous spacing. Use p-8, p-12, py-24. Containers with borders MUST have p-8.",
+    "grids": "Use 'Tetris' asymmetric bento grids (grid-cols-12) for features, and 'Control Room' dense grids (grid-cols-3 gap-6) for analytics showcases."
+  },
+  "surface_styles": {
+    "glassmorphism": "backdrop-blur-xl bg-white/70 border border-white/40 shadow-sm",
+    "glassmorphism_dark": "backdrop-blur-xl bg-[#004c4c]/80 border border-white/10",
+    "tracing_beam": "Card with a delicate 1px border and a subtle mint-green glow shadow behind it. Used for SOA upload.",
+    "grid_borders": "Features use border-collapse style with border-r and border-b in light gray."
+  },
+  "media_assets": {
+    "hero_laptop": {
+      "url": "https://images.pexels.com/photos/577210/pexels-photo-577210.jpeg",
+      "description": "Sleek laptop showcasing data analytics and graphs"
+    },
+    "analytics_dashboard": {
+      "url": "https://images.unsplash.com/photo-1551288049-bebda4e38f71",
+      "description": "graphs of performance analytics on a laptop screen"
+    },
+    "expert_chef": {
+      "url": "https://images.unsplash.com/photo-1622021142947-da7dedc7c39a",
+      "description": "Professional chef in kitchen, represents expert operations"
+    },
+    "expert_owner": {
+      "url": "https://images.unsplash.com/photo-1761662826177-a50286fe7eef",
+      "description": "Indian restaurant owner"
+    },
+    "modern_restaurant": {
+      "url": "https://images.pexels.com/photos/15337739/pexels-photo-15337739.jpeg",
+      "description": "Modern elegant restaurant interior"
+    }
+  },
+  "sections": [
+    {
+      "name": "Navigation",
+      "layout": "Fixed, z-50, dark glassmorphism (glassmorphism_dark) spanning full width. Logo text in Accent Mint.",
+      "components": "Navigation menu links, primary CTA button in Mint Green."
+    },
+    {
+      "name": "Hero",
+      "content": "Smart Insights for Restaurants. Track sales, payouts, profits across Zomato & Swiggy.",
+      "layout": "Dark Teal background (bg-primary_teal). Split 50/50. Left: Huge H1 (text_inverse) with Mint Green overline. Right: hero_laptop image floating with a soft shadow and rounded-xl edges.",
+      "ctas": ["Request Demo (Mint Green solid)", "App Store / Google Play (Outline white)"]
+    },
+    {
+      "name": "Manage Every Outlet",
+      "content": "Track sales, payouts, profits across Zomato, Swiggy in one place.",
+      "layout": "Light background. Bento 'Control Room' grid. 3 columns showing abstract metric cards using simple HTML/Tailwind to represent Swiggy/Zomato dashboards."
+    },
+    {
+      "name": "SOA Upload",
+      "content": "Turn complex SOA files into easy-to-read charts and metrics.",
+      "layout": "Two columns. Left: H2 + body. Right: Drag-and-drop zone styled with 'tracing_beam' aesthetic (dashed Mint Green border, bg-accent_mint_muted/30, subtle pulse animation).",
+      "cta": "Analyze My SOA"
+    },
+    {
+      "name": "Expert Help",
+      "content": "Neutral honest feedback, human assistance.",
+      "layout": "Editorial layout. Left: expert_chef image filling a tall column (h-full rounded-2xl object-cover). Right: Deep Dark Teal card overlapping slightly, with the text and CTA.",
+      "cta": "Book an appointment"
+    },
+    {
+      "name": "Operations Handled",
+      "content": "Menu re-engineering, Digital marketing, GST, photoshoots.",
+      "layout": "Marquee strategy (The Editorial Ribbon). Massive outline text in background scrolling infinitely. Foreground: 4 clean, minimalist cards (glassmorphism) over modern_restaurant image."
+    },
+    {
+      "name": "Why Choose BizzDeck",
+      "content": "All-in-one Dashboard, Real Insights, Trusted, Secure.",
+      "layout": "Technical Grid Borders layout. 2x2 grid where internal borders (border-r, border-b) are visible, creating a connected skeleton look."
+    },
+    {
+      "name": "Testimonials",
+      "content": "Carousel from restaurant owners.",
+      "layout": "Overlapping card layout or simple flex horizontal scroll. Use expert_owner image as one of the avatars."
+    },
+    {
+      "name": "Pricing",
+      "content": "Lite, Plus, Pro plans. Monthly/Annual toggle.",
+      "layout": "3 columns. Middle column (Plus) is scaled up slightly (scale-105), background is Dark Teal with White text, Mint Green CTA. Left and Right cards are white with Dark Teal text.",
+      "components": "Shadcn Tabs (for monthly/annual toggle), Shadcn Cards."
+    },
+    {
+      "name": "What Makes Us Different",
+      "content": "6-feature grid: Smarter Profit Insights, etc.",
+      "layout": "Asymmetric Tetris bento grid. Mix col-span-2 and col-span-1 to create visual tension."
+    },
+    {
+      "name": "Final CTA & Footer",
+      "layout": "Massive Dark Teal block. Central aligned H2. Mint CTA. Footer links aligned to bottom with a massive 'BIZZDECK' text spanning the full width at the bottom."
+    }
+  ],
+  "components_required": [
+    "lucide-react (for icons)",
+    "framer-motion (for smooth entrance animations and marquee)",
+    "shadcn/tabs (for pricing toggle)",
+    "shadcn/button"
+  ],
+  "data_testid_conventions": {
+    "rule": "All interactive elements MUST include data-testid.",
+    "examples": [
+      "hero-request-demo-btn",
+      "nav-book-appointment-link",
+      "pricing-monthly-tab",
+      "pricing-lite-plan-btn"
+    ]
+  }
+}

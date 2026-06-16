@@ -1,0 +1,1 @@
+self.__NEXT_FONT_MANIFEST="{\"pages\":{},\"app\":{\"/Users/nasihameenkonnola/Desktop/XYROO/BizzdeckNextJs/web/app/layout\":[\"static/media/51731d05c2347afe-s.p.otf\",\"static/media/b5060cb0ca59a654-s.p.otf\"]},\"appUsingSizeAdjust\":true,\"pagesUsingSizeAdjust\":false}"
