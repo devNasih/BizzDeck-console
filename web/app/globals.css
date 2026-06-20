@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 :root {
-  --bd-bg: 150 20% 98%;
+  --bd-bg: 0 0% 96.9%;
+  --bd-section: 20 100% 99.4%;
   --bd-ink: 185 80% 10%;
   --bd-ink-soft: 185 30% 40%;
   --bd-teal: 185 100% 15%;
@@ -20,6 +21,7 @@ body {
   color: hsl(var(--bd-ink));
   font-family: var(--font-body), -apple-system, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "ss01", "cv11";
 }
 

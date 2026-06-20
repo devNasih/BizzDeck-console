@@ -7,18 +7,19 @@ const config: Config = {
     extend: {
       colors: {
         bd: {
-          bg: "hsl(150 20% 98%)",
-          ink: "hsl(185 80% 10%)",
-          inkSoft: "hsl(185 30% 40%)",
-          teal: "hsl(185 100% 15%)",
-          tealDeep: "hsl(185 100% 9%)",
-          mint: "hsl(150 100% 80%)",
-          mintMuted: "hsl(150 40% 92%)",
-          border: "hsl(185 20% 90%)",
+          bg: "hsl(var(--bd-bg))",
+          section: "hsl(var(--bd-section))",
+          ink: "hsl(var(--bd-ink))",
+          inkSoft: "hsl(var(--bd-ink-soft))",
+          teal: "hsl(var(--bd-teal))",
+          tealDeep: "hsl(var(--bd-teal-deep))",
+          mint: "hsl(var(--bd-mint))",
+          mintMuted: "hsl(var(--bd-mint-muted))",
+          border: "hsl(var(--bd-border))",
         },
       },
       fontFamily: {
-        display: ["var(--font-display)", "ui-sans-serif"],
+        display: ["var(--font-body)", "ui-sans-serif"],
         sans: ["var(--font-body)", "ui-sans-serif"],
       },
       animation: {

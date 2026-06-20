@@ -1,10 +1,11 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import * as React from "react";
 import Link from "next/link";
 import { useState } from "react";
 import { ArrowUpRight } from "lucide-react";
-import { Logo } from "@/components/ui/Logo";
 import { useAuth } from "@/components/auth/AuthProvider";
 
 export function Nav() {
@@ -26,7 +27,7 @@ export function Nav() {
     >
       <nav className="bd-glass flex items-center justify-between rounded-full px-3 py-2 sm:px-5">
         <Link href="/" aria-label="BizzDeck home" data-testid="nav-home">
-          <Logo light />
+          <img src="/assets/logo final.jpeg" alt="BizzDeck Logo" className="h-8 object-contain rounded-lg" />
         </Link>
         <div className="flex items-center gap-2">
           {!loading && user ? (

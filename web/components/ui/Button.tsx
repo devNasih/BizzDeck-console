@@ -14,10 +14,11 @@ type ButtonProps = {
   type?: "button" | "submit";
   onClick?: () => void;
   "data-testid"?: string;
+  disabled?: boolean;
 };
 
-export function Button({ variant = "mint", size = "md", href, className, children, type, onClick, ...rest }: ButtonProps) {
-  const base = "inline-flex items-center justify-center gap-1.5 rounded-full font-bold whitespace-nowrap";
+export function Button({ variant = "mint", size = "md", href, className, children, type, onClick, disabled, ...rest }: ButtonProps) {
+  const base = "inline-flex items-center justify-center gap-1.5 rounded-full font-bold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed";
   const variants = {
     mint: "btn-mint",
     teal: "btn-teal",
@@ -57,7 +58,7 @@ export function Button({ variant = "mint", size = "md", href, className, childre
   }
 
   return (
-    <button type={type ?? "button"} onClick={handleOnClick} className={cls} {...rest}>
+    <button type={type ?? "button"} onClick={handleOnClick} className={cls} disabled={disabled} {...rest}>
       {children}
     </button>
   );

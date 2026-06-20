@@ -1,5 +1,6 @@
+/* eslint-disable @next/next/no-img-element */
+
 import Link from "next/link";
-import { Logo } from "@/components/ui/Logo";
 
 export function Footer() {
   const cols = [
@@ -11,7 +12,7 @@ export function Footer() {
       <div className="mx-auto max-w-[1180px] px-5 py-12">
         <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
           <div className="col-span-2">
-            <Logo light />
+            <img src="/assets/White@4x.png" alt="BizzDeck Logo" className="h-8 object-contain" />
             <p className="mt-4 max-w-xs text-sm text-white/60">
               Smart insights for restaurants across India.
             </p>
