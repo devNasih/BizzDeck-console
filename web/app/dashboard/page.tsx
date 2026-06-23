@@ -9,12 +9,13 @@ import Link from "next/link";
 import {
   Calculator, Receipt, ChefHat, FileText, CalendarCheck2,
   TrendingUp, FileBarChart2, LogOut, ArrowRight, Plus, Trash2,
-  Upload, CheckCircle2, Sparkles, X, ChevronDown, Store,
+  Upload, Sparkles, X, ChevronDown, Store,
   ChevronLeft, ChevronRight, UserCircle, Ticket, Lock,
 } from "lucide-react";
 import { useAuth, Restaurant } from "@/components/auth/AuthProvider";
 import { api } from "@/lib/api";
 import axios from "axios";
+import { Toast } from "@/components/ui/Toast";
 
 type Recipe = {
   id: string; name: string; serves: number;
@@ -27,8 +28,6 @@ type SoaDecode = {
   gross_sales: number; commission: number; advertising: number; taxes: number;
   net_payout: number; margin_pct: number; insights: string[];
 };
-
-type Tip = { title: string; category: string; impact: string; detail: string };
 
 type Report = {
   summary: { gross_sales: number; net_payout: number; deductions: number; orders: number; avg_order_value: number; profit_margin_pct: number };
@@ -202,67 +201,317 @@ function SoaDecoder() {
   );
 }
 
-/* 5 — Appointments */
-function Appointment() {
-  const [form, setForm] = useState({ topic: "Profitability review", date: "", notes: "", contact: "" });
-  const [ok, setOk] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const submit = async (e: React.FormEvent) => { e.preventDefault(); setBusy(true); try { await api.post("/premium/appointments", form); setOk(true); } finally { setBusy(false); } };
-  if (ok) return (
-    <div className="rounded-2xl border border-bd-border bg-bd-section p-8 text-center">
-      <CheckCircle2 size={36} className="mx-auto text-bd-teal" />
-      <p className="mt-3 font-display text-2xl font-extrabold text-bd-tealDeep">You&apos;re booked</p>
-      <p className="mt-1 text-sm text-bd-inkSoft">An expert will confirm your slot on {form.date}.</p>
-      <button onClick={() => { setOk(false); setForm({ topic: "Profitability review", date: "", notes: "", contact: "" }); }} className="mt-4 text-sm font-semibold text-bd-teal">Book another →</button>
-    </div>
-  );
-  return (
-    <form onSubmit={submit} className="grid grid-cols-1 gap-3 sm:grid-cols-2" data-testid="appt">
-      <label className="block sm:col-span-2"><span className="overline mb-1.5 block text-bd-inkSoft">Topic</span>
-        <select value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} className="w-full rounded-xl border border-bd-border px-3 py-2.5 text-sm outline-none">
-          {["Profitability review", "Menu reversal session", "Marketing & ads", "GST & compliance", "ORM & reputation"].map(t => <option key={t}>{t}</option>)}
-        </select>
-      </label>
-      <label className="block"><span className="overline mb-1.5 block text-bd-inkSoft">Preferred date</span>
-        <input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full rounded-xl border border-bd-border px-3 py-2.5 text-sm outline-none" />
-      </label>
-      <label className="block"><span className="overline mb-1.5 block text-bd-inkSoft">Contact</span>
-        <input value={form.contact} onChange={(e) => setForm({ ...form, contact: e.target.value })} className="w-full rounded-xl border border-bd-border px-3 py-2.5 text-sm outline-none" />
-      </label>
-      <label className="block sm:col-span-2"><span className="overline mb-1.5 block text-bd-inkSoft">Notes</span>
-        <textarea rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full rounded-xl border border-bd-border px-3 py-2.5 text-sm outline-none" />
-      </label>
-      <button type="submit" disabled={busy} className="btn-teal inline-flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-bold sm:col-span-2">{busy ? "Booking…" : "Book appointment"}<ArrowRight size={15} /></button>
-    </form>
-  );
-}
+// Removed Appointment component as requested. Booking is handled directly via meetingLink redirect.
 
 /* 6 — Growth tips */
+type KeyStrategy = {
+  icon: string;
+  strategy: string;
+  description: string;
+};
+
+type Service = {
+  id: number;
+  name: string;
+  overview: string;
+  key_strategies: KeyStrategy[];
+};
+
 function Grow() {
-  const [tips, setTips] = useState<Tip[]>([]);
-  const [filter, setFilter] = useState("All");
-  useEffect(() => { api.get("/premium/growth-tips").then(({ data }) => setTips(data.tips || [])); }, []);
-  const cats = ["All", ...Array.from(new Set(tips.map(t => t.category)))];
-  const filtered = filter === "All" ? tips : tips.filter(t => t.category === filter);
-  return (
-    <div data-testid="grow">
-      <div className="mb-4 flex flex-wrap gap-2">
-        {cats.map(c => (
-          <button key={c} onClick={() => setFilter(c)} className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${filter === c ? "bg-bd-tealDeep text-white" : "border-bd-border text-bd-inkSoft"}`}>{c}</button>
-        ))}
-      </div>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {filtered.map((t, i) => (
-          <div key={i} className="rounded-2xl border border-bd-border bg-bd-section p-5">
+  const [services, setServices] = useState<Service[]>([]);
+  const [selectedService, setSelectedService] = useState<Service | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Enquiry Form states
+  const [showEnquiryModal, setShowEnquiryModal] = useState(false);
+  const [selectedServiceIds, setSelectedServiceIds] = useState<number[]>([]);
+  const [enquiryComments, setEnquiryComments] = useState("");
+  const [enquirySubmitting, setEnquirySubmitting] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  useEffect(() => {
+    let activeRequest = true;
+    axios.get("/v1/callbacks/services")
+      .then(({ data }) => {
+        if (activeRequest && data && data.success) {
+          setServices(data.data || []);
+        }
+      })
+      .catch((err) => {
+        console.error("Error fetching services:", err);
+      })
+      .finally(() => {
+        if (activeRequest) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      activeRequest = false;
+    };
+  }, []);
+
+  const handleSendEnquiry = async () => {
+    if (selectedServiceIds.length === 0) return;
+    setEnquirySubmitting(true);
+    try {
+      const { data } = await axios.post("/v1/callbacks", {
+        serviceIds: selectedServiceIds,
+        comments: enquiryComments.trim()
+      });
+      if (data && data.success) {
+        setToast({ message: "Enquiry submitted successfully! Our team will contact you shortly.", type: "success" });
+        setShowEnquiryModal(false);
+        setSelectedServiceIds([]);
+        setEnquiryComments("");
+      } else {
+        setToast({ message: "Failed to submit enquiry.", type: "error" });
+      }
+    } catch (err) {
+      console.error(err);
+      const axiosError = err as { response?: { data?: { error?: string; message?: string } } };
+      const errMsg = axiosError.response?.data?.error || axiosError.response?.data?.message || "Failed to submit enquiry. Please try again.";
+      setToast({ message: errMsg, type: "error" });
+    } finally {
+      setEnquirySubmitting(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleOpen = () => {
+      setSelectedServiceIds([]);
+      setShowEnquiryModal(true);
+    };
+    window.addEventListener("open-grow-enquiry", handleOpen);
+    return () => {
+      window.removeEventListener("open-grow-enquiry", handleOpen);
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="grow">
+        {[1, 2, 3].map((n) => (
+          <div key={n} className="animate-pulse rounded-3xl border border-bd-border bg-bd-section p-6 space-y-4">
             <div className="flex items-center justify-between">
-              <span className="overline text-bd-teal">{t.category}</span>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase text-bd-tealDeep ${t.impact === "High" ? "bg-bd-mint" : "bg-bd-mintMuted"}`}>{t.impact}</span>
+              <div className="h-12 w-12 rounded-2xl bg-neutral-200" />
+              <div className="h-5 w-20 rounded-full bg-neutral-200" />
             </div>
-            <p className="mt-3 font-display text-lg font-extrabold text-bd-tealDeep">{t.title}</p>
-            <p className="mt-1 text-sm text-bd-inkSoft">{t.detail}</p>
+            <div className="space-y-2">
+              <div className="h-6 w-3/4 rounded bg-neutral-200" />
+              <div className="h-4 w-full rounded bg-neutral-200" />
+              <div className="h-4 w-5/6 rounded bg-neutral-200" />
+            </div>
+            <div className="h-10 w-full rounded bg-neutral-200/50 pt-4" />
           </div>
         ))}
       </div>
+    );
+  }
+
+  return (
+    <div data-testid="grow" className="space-y-6">
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {services.map((service) => (
+          <div
+            key={service.id}
+            onClick={() => setSelectedService(service)}
+            className="group relative cursor-pointer flex flex-col justify-between rounded-3xl border border-bd-border bg-bd-section p-6 shadow-sm hover:shadow-md hover:border-bd-teal/20 transition duration-300 ease-in-out"
+          >
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-bd-mint/10 text-bd-teal">
+                  <span className="material-icons select-none text-2xl">
+                    {service.key_strategies?.[0]?.icon?.trim() || "trending_up"}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <h4 className="font-display text-lg font-extrabold text-bd-tealDeep group-hover:text-bd-teal transition duration-200">
+                  {service.name}
+                </h4>
+                <p className="mt-1.5 text-xs text-bd-inkSoft leading-relaxed line-clamp-3">
+                  {service.overview}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 pt-4 border-t border-neutral-100/60 flex items-center justify-between text-bd-teal">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedService(service);
+                }}
+                className="text-xs font-bold uppercase tracking-wider group-hover:text-bd-tealLight transition duration-200"
+              >
+                Know More
+              </button>
+              <ArrowRight size={14} className="transform group-hover:translate-x-1 transition-transform duration-200" />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {selectedService && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/40 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-2xl rounded-3xl border border-neutral-200/80 bg-white p-6 sm:p-8 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+            <div>
+              <div className="flex items-center gap-2 text-bd-teal mb-1.5">
+                <Sparkles size={16} className="fill-bd-mint text-bd-mint animate-pulse" />
+                <span className="text-xs font-bold uppercase tracking-wider text-bd-teal">Service Strategy Details</span>
+              </div>
+              <h3 className="font-display text-2xl sm:text-3xl font-extrabold text-bd-tealDeep pr-8">{selectedService.name}</h3>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-2xl bg-neutral-50 border border-neutral-100 p-4 sm:p-5">
+                <h4 className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">Overview</h4>
+                <p className="text-sm text-bd-inkSoft leading-relaxed font-medium">{selectedService.overview}</p>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3 px-1">Key Strategies</h4>
+                <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                  {selectedService.key_strategies.map((strat, sidx) => (
+                    <div
+                      key={sidx}
+                      className="flex gap-3.5 p-4 rounded-2xl border border-bd-border bg-white hover:border-bd-teal/30 hover:shadow-sm transition duration-200"
+                    >
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-bd-mint/10 text-bd-teal">
+                        <span className="material-icons select-none text-2xl">
+                          {strat.icon?.trim() || "star"}
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        <h5 className="font-display text-sm font-bold text-bd-tealDeep">{strat.strategy}</h5>
+                        <p className="text-xs text-bd-inkSoft leading-relaxed">{strat.description}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setSelectedService(null)}
+                className="rounded-full bg-bd-tealDeep hover:bg-bd-tealLight px-6 py-2.5 text-sm font-bold text-white shadow-sm transition"
+              >
+                Close
+              </button>
+            </div>
+            <button
+              onClick={() => setSelectedService(null)}
+              className="absolute right-6 top-6 p-2 rounded-xl bg-neutral-50 hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900 border border-neutral-200/60 transition duration-200"
+              aria-label="Close details"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Transparent Enquiry Popup Modal */}
+      {showEnquiryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/20 backdrop-blur-md p-4 overflow-y-auto">
+          <div className="relative w-full max-w-lg rounded-3xl border border-white/20 bg-white/80 backdrop-blur-xl p-6 sm:p-8 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+            <div>
+              <h3 className="font-display text-2xl sm:text-3xl font-extrabold text-bd-tealDeep">How can we help?</h3>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2.5 px-1">
+                  Select Services (Multiple)
+                </label>
+                <div className="grid grid-cols-1 gap-2">
+                  {services.map((service) => {
+                    const isSelected = selectedServiceIds.includes(service.id);
+                    return (
+                      <label
+                        key={service.id}
+                        className={`flex items-center gap-3 p-3.5 rounded-2xl border cursor-pointer select-none transition duration-200 ${
+                          isSelected
+                            ? "bg-bd-mint/15 border-bd-teal text-bd-tealDeep font-bold"
+                            : "bg-white/40 border-neutral-200/60 hover:bg-white/60 text-bd-inkSoft hover:text-neutral-900"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {
+                            if (isSelected) {
+                              setSelectedServiceIds(selectedServiceIds.filter(id => id !== service.id));
+                            } else {
+                              setSelectedServiceIds([...selectedServiceIds, service.id]);
+                            }
+                          }}
+                          className="h-4 w-4 rounded border-neutral-300 text-bd-teal focus:ring-bd-teal"
+                        />
+                        <span className="text-sm">{service.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2 px-1">
+                  Additional Comments
+                </label>
+                <textarea
+                  value={enquiryComments}
+                  onChange={(e) => setEnquiryComments(e.target.value)}
+                  placeholder="Tell us more about your restaurant's goals, current problems, or requirements..."
+                  rows={4}
+                  className="w-full rounded-2xl border border-neutral-200 bg-white/40 p-4 text-sm text-bd-inkSoft outline-none focus:border-bd-teal focus:ring-1 focus:ring-bd-teal placeholder-neutral-400/80 transition"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => {
+                  setShowEnquiryModal(false);
+                  setSelectedServiceIds([]);
+                  setEnquiryComments("");
+                }}
+                className="flex-1 rounded-full border border-neutral-200/80 bg-white/60 py-2.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSendEnquiry}
+                disabled={enquirySubmitting || selectedServiceIds.length === 0}
+                className="flex-1 rounded-full bg-bd-tealDeep hover:bg-bd-tealLight py-2.5 text-xs font-bold text-white shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {enquirySubmitting ? "Submitting..." : "Submit Enquiry"}
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                setShowEnquiryModal(false);
+                setSelectedServiceIds([]);
+                setEnquiryComments("");
+              }}
+              className="absolute right-6 top-6 p-2 rounded-xl bg-white/60 hover:bg-white/90 text-neutral-500 hover:text-neutral-900 border border-neutral-200/60 transition duration-200"
+              aria-label="Close modal"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Enquiry outcome Notification Toast */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
     </div>
   );
 }
@@ -390,12 +639,26 @@ function ProfileSection() {
 
         {/* Associated Restaurants */}
         <div className="rounded-2xl border border-bd-border bg-bd-section p-6 space-y-4 shadow-sm">
-          <h3 className="font-display text-lg font-extrabold text-bd-tealDeep mb-1">Your Restaurants</h3>
+          <div className="flex items-center justify-between border-b border-neutral-100/60 pb-3 mb-1">
+            <h3 className="font-display text-lg font-extrabold text-bd-tealDeep">Your Restaurants</h3>
+            {user.restaurants && user.restaurants.length > 0 && (
+              <Link
+                href="/dashboard/restaurants"
+                className="text-xs font-bold text-bd-teal hover:underline flex items-center gap-1"
+              >
+                View All &rarr;
+              </Link>
+            )}
+          </div>
           
           {user.restaurants && user.restaurants.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {user.restaurants.map((rest) => (
-                <div key={rest.id} className="flex items-center gap-3 rounded-xl border border-bd-border p-3 bg-white/40">
+                <Link
+                  key={rest.id}
+                  href={`/dashboard/add-restaurant?id=${rest.id}`}
+                  className="flex items-center gap-3 rounded-xl border border-bd-border p-3 bg-white/40 hover:bg-bd-mintMuted/30 hover:border-bd-teal/20 transition duration-200"
+                >
                   <div className="h-8 w-8 rounded-lg bg-bd-mintMuted flex items-center justify-center text-bd-tealDeep shrink-0">
                     <Store size={15} />
                   </div>
@@ -403,7 +666,7 @@ function ProfileSection() {
                     <p className="text-xs font-bold text-bd-tealDeep truncate">{rest.name}</p>
                     {rest.location && <p className="text-[10px] text-bd-inkSoft truncate mt-0.5">{rest.location}</p>}
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
           ) : (
@@ -629,7 +892,7 @@ const TOOLS = [
   { key: "food", title: "Food Cost Calculator", desc: "Coming soon.", icon: Receipt, C: () => null, locked: true },
   { key: "recipe", title: "Recipe Management", desc: "Save recipes with auto-priced suggestions.", icon: ChefHat, C: RecipeMgmt },
   { key: "soa", title: "Online SOA Decoder", desc: "Upload SOA, see net payout + hidden charges.", icon: FileText, C: SoaDecoder },
-  { key: "appt", title: "Book Appointment", desc: "Schedule a session with a BizzDeck expert.", icon: CalendarCheck2, C: Appointment },
+  { key: "appt", title: "Book Appointment", desc: "Schedule a session with a BizzDeck expert.", icon: CalendarCheck2, C: () => null },
   { key: "grow", title: "Grow Your Business", desc: "Curated, high-impact tactics for restaurants.", icon: TrendingUp, C: Grow },
   { key: "report", title: "Business Report", desc: "Generate a board-ready performance report.", icon: FileBarChart2, C: Reports },
   { key: "tickets", title: "My Tickets", desc: "Track and manage your support tickets and requests.", icon: Ticket, C: MyTickets },
@@ -656,12 +919,15 @@ export default function DashboardPage() {
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const restaurantList = useMemo(() => {
     return user?.restaurants || [];
   }, [user]);
 
   useEffect(() => {
+    if (loading || !user) return;
+
     if (restaurantList.length > 0) {
       if (!selectedRest || !restaurantList.some(r => r.id === selectedRest.id)) {
         const defaultRest = restaurantList[0];
@@ -672,13 +938,45 @@ export default function DashboardPage() {
       setSelectedRest(null);
       localStorage.removeItem("selected_restaurant");
     }
-  }, [restaurantList, selectedRest]);
+  }, [loading, user, restaurantList, selectedRest]);
 
   const handleSelectRestaurant = (r: Restaurant) => {
     setSelectedRest(r);
     localStorage.setItem("selected_restaurant", JSON.stringify(r));
     setDropdownOpen(false);
   };
+
+  const [selectedRestPlan, setSelectedRestPlan] = useState<string | null>(null);
+  const [selectedRestMeetingLink, setSelectedRestMeetingLink] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (loading || !user || !selectedRest?.id) {
+      if (!selectedRest?.id) {
+        setSelectedRestPlan(null);
+        setSelectedRestMeetingLink(null);
+      }
+      return;
+    }
+
+    let activeRequest = true;
+
+    axios.get(`/v1/restaurants/${selectedRest.id}`)
+      .then((res) => {
+        if (activeRequest && res.data?.success && res.data?.data) {
+          const plan = res.data.data.plan;
+          const meetingLink = res.data.data.meetingLink;
+          setSelectedRestPlan(plan);
+          setSelectedRestMeetingLink(meetingLink);
+        }
+      })
+      .catch((err) => {
+        console.error("Error fetching restaurant details:", err);
+      });
+
+    return () => {
+      activeRequest = false;
+    };
+  }, [loading, user, selectedRest?.id]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -699,12 +997,15 @@ export default function DashboardPage() {
   const isNoRestaurant = restaurantList.length === 0;
 
   useEffect(() => {
-    if (!loading && user && isNoRestaurant) {
-      if (active !== "tickets" && active !== "profile") {
-        setActive("profile");
+    if (!loading && user) {
+      const isRestaurantPlanFree = selectedRestPlan === "free";
+      if (isNoRestaurant || isRestaurantPlanFree) {
+        if (active !== "tickets" && active !== "profile") {
+          setActive("profile");
+        }
       }
     }
-  }, [loading, user, isNoRestaurant, active]);
+  }, [loading, user, isNoRestaurant, selectedRestPlan, active]);
 
   if (loading || !user) {
     return <div className="flex min-h-[100svh] items-center justify-center bg-bd-bg"><div className="h-10 w-10 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" /></div>;
@@ -808,12 +1109,27 @@ export default function DashboardPage() {
             {TOOLS.map((t) => {
               const Icon = t.icon;
               const on = t.key === active;
-              const isLocked = t.locked || (isNoRestaurant && t.key !== "tickets" && t.key !== "profile");
+              const isRestaurantPlanFree = selectedRestPlan === "free";
+              const isLocked = t.locked || 
+                (isNoRestaurant && t.key !== "tickets" && t.key !== "profile") ||
+                (isRestaurantPlanFree && t.key !== "tickets" && t.key !== "profile");
               return (
                 <button 
                   key={t.key} 
                   disabled={isLocked}
-                  onClick={() => !isLocked && setActive(t.key)} 
+                  onClick={() => {
+                    if (!isLocked) {
+                      if (t.key === "appt") {
+                        if (selectedRestMeetingLink) {
+                          window.open(selectedRestMeetingLink, "_blank");
+                        } else {
+                          setToast({ message: "No meeting link available for this restaurant.", type: "error" });
+                        }
+                      } else {
+                        setActive(t.key);
+                      }
+                    }
+                  }}
                   data-testid={`tool-${t.key}`} 
                   className={`relative group flex items-center rounded-xl py-3 transition w-full text-[14px] ${
                     sidebarCollapsed ? "justify-center px-0" : "px-3.5 text-left"
@@ -847,7 +1163,7 @@ export default function DashboardPage() {
                   )}
                   {sidebarCollapsed && (
                     <div className="absolute left-[76px] z-50 scale-0 group-hover:scale-100 transition-all origin-left duration-200 bg-bd-tealDeep text-white text-[11px] font-bold px-3 py-1.5 rounded-lg whitespace-nowrap shadow-xl border border-white/10">
-                      {t.title} {t.locked ? "(Coming Soon)" : (isNoRestaurant && t.key !== "tickets" && t.key !== "profile") ? "(Locked)" : ""}
+                      {t.title} {t.locked ? "(Coming Soon)" : (t.key !== "tickets" && t.key !== "profile" && (isNoRestaurant || isRestaurantPlanFree)) ? "(Locked)" : ""}
                     </div>
                   )}
                 </button>
@@ -857,9 +1173,21 @@ export default function DashboardPage() {
         </aside>
 
         <main className="flex-1 min-w-0 rounded-3xl border border-bd-border bg-bd-section p-6 sm:p-8">
-          <div className="mb-6">
-            <h1 className="font-display text-3xl font-bold tracking-tight text-bd-tealDeep sm:text-4xl">{Active.title}</h1>
-            <p className="mt-1 text-sm text-bd-inkSoft">{Active.desc}</p>
+          <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h1 className="font-display text-3xl font-bold tracking-tight text-bd-tealDeep sm:text-4xl">{Active.title}</h1>
+              <p className="mt-1 text-sm text-bd-inkSoft">{Active.desc}</p>
+            </div>
+            {active === "grow" && (
+              <button
+                onClick={() => {
+                  window.dispatchEvent(new CustomEvent("open-grow-enquiry"));
+                }}
+                className="shrink-0 self-start sm:self-center rounded-full bg-bd-tealDeep hover:bg-bd-tealLight px-6 py-2.5 text-xs font-bold text-white shadow-sm transition whitespace-nowrap animate-in fade-in slide-in-from-right-4 duration-300"
+              >
+                Send Enquiry
+              </button>
+            )}
           </div>
           <ActiveC />
         </main>
@@ -897,6 +1225,13 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      )}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
       )}
     </div>
   );

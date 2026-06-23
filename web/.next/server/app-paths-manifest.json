@@ -1,3 +1,9 @@
 {
-  "/dashboard/page": "app/dashboard/page.js"
+  "/sitemap.xml/route": "app/sitemap.xml/route.js",
+  "/robots.txt/route": "app/robots.txt/route.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/page": "app/page.js",
+  "/dashboard/page": "app/dashboard/page.js",
+  "/dashboard/add-restaurant/page": "app/dashboard/add-restaurant/page.js",
+  "/dashboard/restaurants/page": "app/dashboard/restaurants/page.js"
 }

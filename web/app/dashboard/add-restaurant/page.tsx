@@ -2,8 +2,8 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import axios from "axios";
 import { ArrowLeft, Store, Shield, Receipt } from "lucide-react";
@@ -12,9 +12,13 @@ import { Button } from "@/components/ui/Button";
 import { TextField } from "@/components/ui/TextField";
 import { Toast } from "@/components/ui/Toast";
 
-export default function AddRestaurantPage() {
+function AddRestaurantForm() {
   const router = useRouter();
-  const { addRestaurant } = useAuth();
+  const searchParams = useSearchParams();
+  const editId = searchParams.get("id");
+  const isEditMode = !!editId;
+
+  const { user, updateUser, addRestaurant } = useAuth();
 
   // Basic Info
   const [name, setName] = useState("");
@@ -24,10 +28,12 @@ export default function AddRestaurantPage() {
   const [locality, setLocality] = useState("");
   const [zone, setZone] = useState("");
   const [phone, setPhone] = useState("");
+  const [editPlan, setEditPlan] = useState("free");
 
   const [localitiesList, setLocalitiesList] = useState<{ id: number; name: string }[]>([]);
   const [zonesList, setZonesList] = useState<{ id: number; name: string }[]>([]);
   const [loadingLocation, setLoadingLocation] = useState(false);
+  const [fetchingDetails, setFetchingDetails] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const fetchLocation = async (pin: string) => {
@@ -76,6 +82,67 @@ export default function AddRestaurantPage() {
       setZone("");
     }
   }, [pincode]);
+
+  // Load details in edit mode
+  useEffect(() => {
+    if (!editId) return;
+
+    const loadDetails = async () => {
+      setFetchingDetails(true);
+      try {
+        const res = await axios.get(`/v1/restaurants/${editId}`);
+        if (res.data && res.data.success && res.data.data) {
+          const d = res.data.data;
+          setName(d.name || "");
+          
+          const phoneClean = d.phoneNumber ? d.phoneNumber.replace(/^\+91/, "") : (d.phone ? d.phone.replace(/^\+91/, "") : "");
+          setPhone(phoneClean);
+          setPincode(d.pincode || "");
+          
+          const building = d.address ? d.address.split(",")[0] : "";
+          setBuildingAddress(building);
+          
+          const loadedLocality = d.locality?.name || d.location || "";
+          const loadedZone = d.zone?.name || "";
+          if (loadedLocality) {
+            setLocalitiesList([{ id: d.localityId || 0, name: loadedLocality }]);
+            setLocality(loadedLocality);
+          }
+          if (loadedZone) {
+            setZonesList([{ id: d.zoneId || 0, name: loadedZone }]);
+            setZone(loadedZone);
+          }
+          
+          setEditPlan(d.plan || "free");
+          
+          // Platform & Compliance
+          setZomatoId(d.zomatoId || "");
+          setSwiggyId(d.swiggyId || "");
+          setFssaiLicense(d.fssaiLicense || "");
+          setFssaiExpiry(d.fssaiExpiryDate || d.fssaiExpiry || "");
+          setGstNumber(d.gstNumber || "");
+          
+          // Financial Metrics
+          setDineInMargin(d.averageMarginPercentage?.toString() || "");
+          setSwiggyHike(d.priceHikePercentageSwiggy?.toString() || "");
+          setZomatoHike(d.priceHikePercentageZomato?.toString() || "");
+          setSwiggyAds(d.adsPercentageSwiggy?.toString() || "");
+          setZomatoAds(d.adsPercentageZomato?.toString() || "");
+          setSwiggyDiscounts(d.discountPercentageSwiggy?.toString() || "");
+          setZomatoDiscounts(d.discountPercentageZomato?.toString() || "");
+          setSwiggyCommission(d.expectedCommissionPercentageSwiggy?.toString() || "");
+          setZomatoCommission(d.expectedCommissionPercentageZomato?.toString() || "");
+        }
+      } catch (err) {
+        console.error("Error loading restaurant details:", err);
+        setToast({ message: "Failed to load restaurant details.", type: "error" });
+      } finally {
+        setFetchingDetails(false);
+      }
+    };
+
+    loadDetails();
+  }, [editId]);
 
   // Platform & Compliance
   const [zomatoId, setZomatoId] = useState("");
@@ -178,48 +245,94 @@ export default function AddRestaurantPage() {
     const selectedLocalityObj = localitiesList.find((loc) => loc.name === locality);
     const selectedZoneObj = zonesList.find((z) => z.name === zone);
 
+    const payload = {
+      name: name.trim(),
+      location: locality,
+      address: `${buildingAddress.trim()}, ${locality}, ${zone}, State: ${state}, Pincode: ${pincode}`,
+      phone: phone.trim(),
+      buildingAddress: buildingAddress.trim(),
+      pincode: pincode.trim(),
+      state: state.trim(),
+      locality: locality,
+      zone: zone,
+      localityId: selectedLocalityObj?.id,
+      zoneId: selectedZoneObj?.id,
+      zomatoId: zomatoId.trim() || undefined,
+      swiggyId: swiggyId.trim() || undefined,
+      fssaiLicense: fssaiLicense.trim() || undefined,
+      fssaiExpiryDate: fssaiExpiry.trim() || undefined,
+      fssaiExpiry: fssaiExpiry.trim() || undefined,
+      gstNumber: gstNumber.trim().toUpperCase() || undefined,
+      dineInMargin: dineInMargin ? parseFloat(dineInMargin) : undefined,
+      swiggyHike: swiggyHike ? parseFloat(swiggyHike) : undefined,
+      zomatoHike: zomatoHike ? parseFloat(zomatoHike) : undefined,
+      swiggyAds: swiggyAds ? parseFloat(swiggyAds) : undefined,
+      zomatoAds: zomatoAds ? parseFloat(zomatoAds) : undefined,
+      swiggyDiscounts: swiggyDiscounts ? parseFloat(swiggyDiscounts) : undefined,
+      zomatoDiscounts: zomatoDiscounts ? parseFloat(zomatoDiscounts) : undefined,
+      swiggyCommission: swiggyCommission ? parseFloat(swiggyCommission) : undefined,
+      zomatoCommission: zomatoCommission ? parseFloat(zomatoCommission) : undefined,
+      plan: editPlan,
+    };
+
     try {
-      const newRest = await addRestaurant({
-        name: name.trim(),
-        location: locality,
-        address: `${buildingAddress.trim()}, ${locality}, ${zone}, State: ${state}, Pincode: ${pincode}`,
-        phone: phone.trim(),
-        buildingAddress: buildingAddress.trim(),
-        pincode: pincode.trim(),
-        state: state.trim(),
-        locality: locality,
-        zone: zone,
-        localityId: selectedLocalityObj?.id,
-        zoneId: selectedZoneObj?.id,
-        zomatoId: zomatoId.trim() || undefined,
-        swiggyId: swiggyId.trim() || undefined,
-        fssaiLicense: fssaiLicense.trim() || undefined,
-        fssaiExpiry: fssaiExpiry.trim() || undefined,
-        gstNumber: gstNumber.trim().toUpperCase() || undefined,
-        dineInMargin: dineInMargin ? parseFloat(dineInMargin) : undefined,
-        swiggyHike: swiggyHike ? parseFloat(swiggyHike) : undefined,
-        zomatoHike: zomatoHike ? parseFloat(zomatoHike) : undefined,
-        swiggyAds: swiggyAds ? parseFloat(swiggyAds) : undefined,
-        zomatoAds: zomatoAds ? parseFloat(zomatoAds) : undefined,
-        swiggyDiscounts: swiggyDiscounts ? parseFloat(swiggyDiscounts) : undefined,
-        zomatoDiscounts: zomatoDiscounts ? parseFloat(zomatoDiscounts) : undefined,
-        swiggyCommission: swiggyCommission ? parseFloat(swiggyCommission) : undefined,
-        zomatoCommission: zomatoCommission ? parseFloat(zomatoCommission) : undefined,
-      });
+      if (isEditMode) {
+        const response = await axios.put(`/v1/restaurants/${editId}`, payload);
+        if (response.data && response.data.success) {
+          // Sync with Auth Context
+          if (user && user.restaurants) {
+            const updatedAuthRests = user.restaurants.map((r) =>
+              r.id === Number(editId) ? { ...r, ...payload, id: Number(editId) } : r
+            );
+            updateUser({ restaurants: updatedAuthRests });
+          }
+          
+          // Sync localStorage selected restaurant
+          const storedRest = localStorage.getItem("selected_restaurant");
+          if (storedRest) {
+            try {
+              const parsed = JSON.parse(storedRest);
+              if (parsed.id === Number(editId)) {
+                localStorage.setItem("selected_restaurant", JSON.stringify({ ...parsed, ...payload, id: Number(editId) }));
+              }
+            } catch (e) {
+              console.error("Local storage update error", e);
+            }
+          }
+          router.push("/dashboard/restaurants");
+        } else {
+          throw new Error(response.data?.message || "Failed to update restaurant");
+        }
+      } else {
+        const newRest = await addRestaurant({
+          ...payload,
+        });
 
-      // Select newly added restaurant in local session
-      localStorage.setItem("selected_restaurant", JSON.stringify(newRest));
+        // Select newly added restaurant in local session
+        localStorage.setItem("selected_restaurant", JSON.stringify(newRest));
 
-      // Route back to dashboard
-      router.push("/dashboard");
+        // Route back to dashboard
+        router.push("/dashboard");
+      }
     } catch (err) {
-      console.error("Failed to add restaurant:", err);
+      console.error(err);
       const errorObj = err as { response?: { data?: { message?: string } }; message?: string };
-      const errMsg = errorObj.response?.data?.message || errorObj.message || "Failed to create restaurant";
+      const errMsg = errorObj.response?.data?.message || errorObj.message || (isEditMode ? "Failed to update restaurant" : "Failed to create restaurant");
       setToast({ message: errMsg, type: "error" });
       setSubmitting(false);
     }
   };
+
+  if (fetchingDetails) {
+    return (
+      <div className="flex min-h-[100svh] items-center justify-center bg-bd-bg">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
+          <p className="text-xs text-bd-inkSoft font-medium">Loading restaurant details...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-bd-bg">
@@ -230,13 +343,15 @@ export default function AddRestaurantPage() {
               <img src="/assets/White@4x.png" alt="BizzDeck Logo" className="h-8 object-contain" />
             </Link>
             <span className="text-white/20 text-sm">|</span>
-            <span className="text-white text-xs font-bold uppercase tracking-wider">Add Restaurant</span>
+            <span className="text-white text-xs font-bold uppercase tracking-wider">
+              {isEditMode ? "Edit Restaurant" : "Add Restaurant"}
+            </span>
           </div>
           <Link
-            href="/dashboard"
+            href={isEditMode ? "/dashboard/restaurants" : "/dashboard"}
             className="btn-outline-light inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold"
           >
-            <ArrowLeft size={13} /> Back to Dashboard
+            <ArrowLeft size={13} /> {isEditMode ? "Back to Restaurants" : "Back to Dashboard"}
           </Link>
         </div>
       </header>
@@ -370,6 +485,8 @@ export default function AddRestaurantPage() {
                     {errors.zone && <p className="text-[10px] text-red-500 font-medium">{errors.zone}</p>}
                   </div>
                 </div>
+
+
               </div>
             </div>
 
@@ -626,17 +743,17 @@ export default function AddRestaurantPage() {
 
           {/* Action buttons spanning full width */}
           <div className="lg:col-span-2 flex gap-4 items-center justify-end pt-4 border-t border-bd-border">
-            <Button variant="outline" href="/dashboard" disabled={submitting}>
+            <Button variant="outline" href={isEditMode ? "/dashboard/restaurants" : "/dashboard"} disabled={submitting}>
               Cancel
             </Button>
             <Button type="submit" variant="teal" disabled={submitting}>
               {submitting ? (
                 <>
                   <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" />
-                  Add Restaurant...
+                  {isEditMode ? "Saving Changes..." : "Add Restaurant..."}
                 </>
               ) : (
-                "Add Restaurant"
+                isEditMode ? "Save Changes" : "Add Restaurant"
               )}
             </Button>
           </div>
@@ -662,5 +779,18 @@ export default function AddRestaurantPage() {
         />
       )}
     </div>
+  );
+}
+
+// Wrapper with Suspense boundary required for next.config static generation when using useSearchParams
+export default function AddRestaurantPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-[100svh] items-center justify-center bg-bd-bg">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
+      </div>
+    }>
+      <AddRestaurantForm />
+    </Suspense>
   );
 }

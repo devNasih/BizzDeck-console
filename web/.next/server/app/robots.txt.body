@@ -1,0 +1,7 @@
+User-Agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /api
+
+Host: https://www.bizzdeck.com
+Sitemap: https://www.bizzdeck.com/sitemap.xml

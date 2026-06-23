@@ -6,6 +6,53 @@ import axios, { InternalAxiosRequestConfig, AxiosResponse, AxiosError } from "ax
 import { api } from "@/lib/api";
 import { AuthModal } from "./AuthModal";
 
+// Suppress unhandled third-party script rejections (e.g. MSG91 OTP Axios errors) from crashing the dev layout
+if (typeof window !== "undefined") {
+  const isMsg91Error = (error: unknown): boolean => {
+    if (!error || typeof error !== "object") return false;
+    const err = error as {
+      message?: string;
+      stack?: string;
+      name?: string;
+      config?: { url?: string };
+    };
+    const msg = err.message || "";
+    const stack = err.stack || "";
+    const name = err.name || "";
+    const url = err.config?.url || "";
+    return (
+      url.includes("msg91.com") ||
+      url.includes("phone91.com") ||
+      msg.includes("msg91.com") ||
+      msg.includes("phone91.com") ||
+      stack.includes("msg91.com") ||
+      stack.includes("phone91.com") ||
+      stack.includes("otp-provider.js") ||
+      (name === "AxiosError" && (url.includes("verify") || stack.includes("otp-provider")))
+    );
+  };
+
+  window.addEventListener("unhandledrejection", (event) => {
+    if (isMsg91Error(event.reason)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      console.warn("Suppressed external MSG91 unhandled Axios rejection:", event.reason);
+    }
+  }, { capture: true });
+
+  window.addEventListener("error", (event) => {
+    if (
+      (event.filename && (event.filename.includes("msg91.com") || event.filename.includes("phone91.com"))) ||
+      (event.message && (event.message.includes("msg91.com") || event.message.includes("phone91.com"))) ||
+      isMsg91Error(event.error)
+    ) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      console.warn("Suppressed external MSG91 script error:", event.message);
+    }
+  }, { capture: true });
+}
+
 // Interceptor to automatically attach Bearer token to /v1/ requests
 axios.interceptors.request.use(
   (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
@@ -129,6 +176,7 @@ export type Restaurant = {
   zomatoDiscounts?: number;
   swiggyCommission?: number;
   zomatoCommission?: number;
+  plan?: string;
 };
 
 export interface ApiRestaurant {
@@ -171,6 +219,7 @@ export interface ApiRestaurant {
   expectedCommissionPercentageSwiggy?: number;
   expectedCommissionPercentageZomato?: number;
   gstNumber?: string;
+  plan?: string;
 }
 
 export function mapResponseToRestaurant(apiData: ApiRestaurant): Restaurant {
@@ -202,6 +251,7 @@ export function mapResponseToRestaurant(apiData: ApiRestaurant): Restaurant {
     zomatoDiscounts: apiData.discountPercentageZomato,
     swiggyCommission: apiData.expectedCommissionPercentageSwiggy,
     zomatoCommission: apiData.expectedCommissionPercentageZomato,
+    plan: apiData.plan,
   };
 }
 
@@ -257,46 +307,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoading(false);
   }, []);
 
-  // Suppress unhandled third-party script rejections (e.g. MSG91 OTP Axios errors) from crashing the dev layout
-  useEffect(() => {
-    if (typeof window === "undefined") return;
 
-    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
-      const reason = event.reason;
-      if (reason) {
-        // Suppress if it is an AxiosError from msg91 or phone91
-        const isAxiosErr = reason.name === "AxiosError" || reason.isAxiosError;
-        const configUrl = reason.config?.url || "";
-        const isMsg91 = configUrl.includes("msg91.com") || configUrl.includes("phone91.com");
-        
-        // Also check if stack trace mentions msg91 or phone91
-        const hasMsg91Stack = reason.stack && (reason.stack.includes("msg91.com") || reason.stack.includes("phone91.com"));
-        
-        if (isMsg91 || (isAxiosErr && hasMsg91Stack)) {
-          event.preventDefault();
-          console.warn("Suppressed external MSG91 unhandled Axios rejection:", reason.message || reason);
-        }
-      }
-    };
-
-    const handleError = (event: ErrorEvent) => {
-      const isMsg91 = event.filename && (event.filename.includes("msg91.com") || event.filename.includes("phone91.com"));
-      const isMsg91Message = event.message && (event.message.includes("msg91.com") || event.message.includes("phone91.com"));
-      
-      if (isMsg91 || isMsg91Message) {
-        event.preventDefault();
-        console.warn("Suppressed external MSG91 script error:", event.message);
-      }
-    };
-
-    window.addEventListener("unhandledrejection", handleUnhandledRejection);
-    window.addEventListener("error", handleError);
-
-    return () => {
-      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
-      window.removeEventListener("error", handleError);
-    };
-  }, []);
 
   // Inject MSG91 widget configuration and scripts
   useEffect(() => {
