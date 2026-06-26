@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { X, ArrowRight, Smartphone } from "lucide-react";
 import { useAuth } from "./AuthProvider";
-import { formatApiError } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api";
 import { Toast } from "@/components/ui/Toast";
 
 export function AuthModal() {
@@ -125,15 +125,7 @@ export function AuthModal() {
       setStep("otp");
       showToast("OTP sent successfully!", "success");
     } catch (err: unknown) {
-      const error = err as {
-        response?: { data?: { detail?: unknown } };
-        message?: string;
-      } | null;
-      const errMsg =
-        (error?.response?.data?.detail ? formatApiError(error.response.data.detail) : null) ||
-        error?.message ||
-        "Failed to send OTP. Please try again.";
-      showToast(errMsg, "error");
+      showToast(getApiErrorMessage(err, "Failed to send OTP. Please try again."), "error");
     } finally {
       setBusy(false);
     }
@@ -153,15 +145,7 @@ export function AuthModal() {
       await loginWithPhone(phone, otp);
       showToast("Logged in successfully!", "success");
     } catch (err: unknown) {
-      const error = err as {
-        response?: { data?: { detail?: unknown } };
-        message?: string;
-      } | null;
-      const errMsg =
-        (error?.response?.data?.detail ? formatApiError(error.response.data.detail) : null) ||
-        error?.message ||
-        "Incorrect OTP. Please try again.";
-      showToast(errMsg, "error");
+      showToast(getApiErrorMessage(err, "Incorrect OTP. Please try again."), "error");
     } finally {
       setBusy(false);
     }

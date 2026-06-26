@@ -4,7 +4,7 @@ import Link from "next/link";
 
 export function Footer() {
   const cols = [
-    { h: "Product", l: [["Dashboard", "/dashboard"], ["SOA Decoder", "/dashboard"], ["Pricing", "/#pricing"]] },
+    { h: "Product", l: [["Dashboard", "/dashboard"], ["Analyser", "/dashboard"], ["Pricing", "/#pricing"]] },
     { h: "Company", l: [["Privacy", "/privacy"], ["Contact", "mailto:hello@bizzdeck.com"]] },
   ];
   return (

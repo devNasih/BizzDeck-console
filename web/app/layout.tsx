@@ -1,6 +1,7 @@
 
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
+import Image from "next/image";
 import "./globals.css";
 import { siteConfig } from "@/lib/site";
 import { AuthProvider } from "@/components/auth/AuthProvider";
@@ -105,6 +106,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={neueMontreal.variable} suppressHydrationWarning>
       <head>
         <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet" />
+        <link rel="preconnect" href="https://verify.msg91.com" crossOrigin="" />
+        <link rel="preconnect" href="https://verify.phone91.com" crossOrigin="" />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(orgJsonLd) }}
@@ -115,7 +118,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body suppressHydrationWarning>
-        <AuthProvider>{children}</AuthProvider>
+        <div className="mobile-restriction" role="status" aria-live="polite">
+          <div className="mobile-restriction__panel">
+            <Image
+              src="/assets/logo final.jpeg"
+              alt="BizzDeck"
+              width={120}
+              height={48}
+              className="mobile-restriction__logo"
+              priority
+            />
+            <p className="mobile-restriction__eyebrow">Desktop experience</p>
+            <h1>BizzDeck is not available on mobile phones.</h1>
+            <p>Please open this dashboard on a tablet, laptop, desktop, or external monitor.</p>
+          </div>
+        </div>
+        <div className="desktop-app-shell">
+          <AuthProvider>{children}</AuthProvider>
+        </div>
       </body>
     </html>
   );

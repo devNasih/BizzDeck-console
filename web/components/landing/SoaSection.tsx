@@ -6,7 +6,7 @@ import { Upload, ArrowUpRight, IndianRupee, Minus, BarChart3 } from "lucide-reac
 export function SoaSection() {
   return (
     <Section theme="mint" data-testid="soa">
-      <Eyebrow>03 — SOA Decoder</Eyebrow>
+      <Eyebrow>03 — Analyser</Eyebrow>
       <H>Upload SOA.<br/>Get answers.</H>
       <Sub>Instantly understand revenue, deductions, payouts and profitability.</Sub>
 

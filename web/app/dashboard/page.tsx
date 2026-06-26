@@ -2,18 +2,20 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Calculator, Receipt, ChefHat, FileText, CalendarCheck2,
   TrendingUp, FileBarChart2, LogOut, ArrowRight, Plus, Trash2,
-  Upload, Sparkles, X, ChevronDown, Store,
+  Sparkles, X, ChevronDown, Store,
   ChevronLeft, ChevronRight, UserCircle, Ticket, Lock,
+  ArrowUp, ArrowDown,
 } from "lucide-react";
+import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { useAuth, Restaurant } from "@/components/auth/AuthProvider";
-import { api } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api";
 import axios from "axios";
 import { Toast } from "@/components/ui/Toast";
 
@@ -23,11 +25,6 @@ type Recipe = {
   per_serve_cost: number; suggested_price: number; target_margin_pct: number;
 };
 
-type SoaDecode = {
-  id: string; filename: string;
-  gross_sales: number; commission: number; advertising: number; taxes: number;
-  net_payout: number; margin_pct: number; insights: string[];
-};
 
 type Report = {
   summary: { gross_sales: number; net_payout: number; deductions: number; orders: number; avg_order_value: number; profit_margin_pct: number };
@@ -35,10 +32,27 @@ type Report = {
   recommendations: string[];
 };
 
-const Stat = ({ label, value, accent }: { label: string; value: React.ReactNode; accent?: boolean }) => (
-  <div className={`rounded-xl p-2 ${accent ? "bg-bd-mint" : "border border-bd-border"}`}>
-    <p className="overline text-[9px] text-bd-inkSoft">{label}</p>
-    <p className="font-display text-base font-bold text-bd-tealDeep">{value}</p>
+const Stat = ({
+  label,
+  value,
+  accent,
+  change,
+}: {
+  label: string;
+  value: React.ReactNode;
+  accent?: boolean;
+  change?: { text: string; positive: boolean };
+}) => (
+  <div className={`rounded-xl p-2.5 ${accent ? "bg-bd-mint border border-bd-mint/10" : "border border-bd-border"} flex flex-col justify-between h-full`}>
+    <div>
+      <p className="overline text-[9px] text-bd-inkSoft">{label}</p>
+      <p className="font-display text-base font-bold text-bd-tealDeep">{value}</p>
+    </div>
+    {change && (
+      <span className={`text-[10px] font-bold mt-1 inline-block ${change.positive ? "text-emerald-600" : "text-red-500"}`}>
+        {change.text}
+      </span>
+    )}
   </div>
 );
 
@@ -97,19 +111,42 @@ function RecipeMgmt() {
   const [margin, setMargin] = useState(65);
   const [busy, setBusy] = useState(false);
 
-  const load = async () => { try { const { data } = await api.get("/premium/recipes"); setRecipes(data.recipes || []); } catch { /* ignore */ } };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("bizzdeck_recipes");
+      if (stored) setRecipes(JSON.parse(stored));
+    } catch {
+      // ignore local cache errors
+    }
+  }, []);
+
+  const persistRecipes = (nextRecipes: Recipe[]) => {
+    setRecipes(nextRecipes);
+    try {
+      localStorage.setItem("bizzdeck_recipes", JSON.stringify(nextRecipes));
+    } catch {
+      // ignore local cache errors
+    }
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault(); setBusy(true);
     try {
-      await api.post("/premium/recipes", {
+      const ingredients = ings.map(i => ({ name: i.name, cost: parseFloat(String(i.cost)) || 0 }));
+      const totalCost = ingredients.reduce((sum, i) => sum + i.cost, 0);
+      const safeServes = Number(serves) || 1;
+      const perServeCost = totalCost / safeServes;
+      const suggestedPrice = perServeCost / Math.max(0.01, 1 - margin / 100);
+      const nextRecipe: Recipe = {
+        id: `${Date.now()}`,
         name, serves: Number(serves) || 1,
-        ingredients: ings.map(i => ({ name: i.name, cost: parseFloat(String(i.cost)) || 0 })),
+        ingredients,
+        per_serve_cost: Number(perServeCost.toFixed(2)),
+        suggested_price: Number(suggestedPrice.toFixed(2)),
         target_margin_pct: margin,
-      });
+      };
+      persistRecipes([nextRecipe, ...recipes]);
       setName(""); setServes(1); setIngs([{ name: "", cost: 0 }]); setMargin(65);
-      await load();
     } finally { setBusy(false); }
   };
 
@@ -140,7 +177,7 @@ function RecipeMgmt() {
                 <p className="font-display text-lg font-extrabold text-bd-tealDeep">{r.name}</p>
                 <p className="text-xs text-bd-inkSoft">Serves {r.serves} · {r.ingredients?.length || 0} ingredients</p>
               </div>
-              <button onClick={async () => { await api.delete(`/premium/recipes/${r.id}`); await load(); }} className="text-bd-inkSoft hover:text-red-600"><Trash2 size={15} /></button>
+              <button onClick={() => persistRecipes(recipes.filter((recipe) => recipe.id !== r.id))} className="text-bd-inkSoft hover:text-red-600"><Trash2 size={15} /></button>
             </div>
             <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
               <Stat label="Cost / serve" value={`₹ ${r.per_serve_cost}`} />
@@ -154,49 +191,1632 @@ function RecipeMgmt() {
   );
 }
 
-/* 4 — SOA Decoder */
-function SoaDecoder() {
-  const [r, setR] = useState<SoaDecode | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const onFile = async (f: File) => {
-    setBusy(true); setErr("");
-    try {
-      const form = new FormData(); form.append("file", f);
-      const { data } = await api.post("/premium/soa/decode", form);
-      setR(data.decode);
-    } catch { setErr("Could not decode that file. Try PDF, XLS or CSV."); }
-    finally { setBusy(false); }
+/* 4 — SOA Analyser */
+type AnalysisReport = {
+  id: string | number;
+  restaurantId?: number;
+  aggregator?: "zomato" | "swiggy";
+  month: string | number;
+  year?: number;
+  numberOfFiles?: number;
+  filesHash?: string;
+  numberOfOrders?: number;
+  datesWithNoOrders?: string[];
+  createdAt: string;
+  zomatoAnalysis?: string;
+  swiggyAnalysis?: string;
+  calculatedSolution?: CalculatedSolution;
+  calculatedTemplate?: CalculatedTemplate;
+};
+
+type PercentageComparison = {
+  head?: string | null;
+  zomato?: string | null;
+  swiggy?: string | null;
+  winner?: string | null;
+};
+
+type CompareData = {
+  zomatoSales?: number | null;
+  swiggySales?: number | null;
+  zomatoPercentageOfTotalSales?: string | null;
+  swiggyPercentageOfTotalSales?: string | null;
+  percentages?: PercentageComparison[] | null;
+};
+
+type MonthwiseRef = {
+  month: string | number;
+  year?: number;
+  zomatoAnalysis?: string | number | null;
+  swiggyAnalysis?: string | number | null;
+  total_sales?: number;
+  overall?: {
+    gross_sales?: number | string | null;
+    net_deductions?: number | string | null;
+    net_payout?: number | string | null;
   };
+  zomatoProfitExceedsLimit?: boolean | null;
+  zomatoProfitSuggestion?: string[] | null;
+  swiggyProfitExceedsLimit?: boolean | null;
+  swiggyProfitSuggestion?: string[] | null;
+  profitExceedsLimit?: boolean;
+  profitMessage?: string;
+  percentageChangeFromLastMonth?: string | number | null;
+  compare?: CompareData | null;
+};
+
+type OverallSales = {
+  grossSales?: number | string | null;
+  netDeductions?: number | string | null;
+  netPayable?: number | string | null;
+};
+
+type SoaMonthOption = {
+  value: string;
+  label: string;
+};
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+function getReportMonthNumber(month: unknown, createdAt?: string): number {
+  const num = Number(month);
+  if (!Number.isNaN(num) && num >= 1 && num <= 12) return num;
+
+  const str = String(month || "");
+  const parsed = new Date(str);
+  if (str.includes("-") && !Number.isNaN(parsed.getTime())) return parsed.getMonth() + 1;
+
+  const lower = str.toLowerCase();
+  const foundIndex = MONTH_NAMES.findIndex((name) => lower.includes(name.toLowerCase()) || lower.includes(name.slice(0, 3).toLowerCase()));
+  if (foundIndex >= 0) return foundIndex + 1;
+
+  if (createdAt) return new Date(createdAt).getMonth() + 1;
+  return 0;
+}
+
+function getReportYear(report: AnalysisReport): number {
+  if (report.year) return report.year;
+  return 0;
+}
+
+function formatLatestAnalyticsLabel(month: unknown, year?: number): string {
+  const monthNumber = getReportMonthNumber(month);
+  const monthLabel = monthNumber >= 1 && monthNumber <= 12 ? MONTH_NAMES[monthNumber - 1] : String(month || "").trim();
+  return monthLabel && year ? `Latest Analytics - ${monthLabel} ${year}` : "Latest Analytics";
+}
+
+function getLatestAnalyticsLabel(reports: AnalysisReport[], monthwiseReferences: MonthwiseRef[] = []): string {
+  if (monthwiseReferences.length > 0) {
+    const latestReference = monthwiseReferences[0];
+    return formatLatestAnalyticsLabel(latestReference.month, latestReference.year);
+  }
+
+  if (reports.length === 0) return "Latest Analytics";
+
+  const latest = reports.reduce((currentLatest, report) => {
+    const currentScore = getReportYear(currentLatest) * 100 + getReportMonthNumber(currentLatest.month, currentLatest.createdAt);
+    const reportScore = getReportYear(report) * 100 + getReportMonthNumber(report.month, report.createdAt);
+    if (reportScore !== currentScore) return reportScore > currentScore ? report : currentLatest;
+
+    const currentCreated = currentLatest.createdAt ? new Date(currentLatest.createdAt).getTime() : 0;
+    const reportCreated = report.createdAt ? new Date(report.createdAt).getTime() : 0;
+    return reportCreated > currentCreated ? report : currentLatest;
+  }, reports[0]);
+
+  const monthNumber = getReportMonthNumber(latest.month, latest.createdAt);
+  const year = getReportYear(latest);
+  return formatLatestAnalyticsLabel(monthNumber, year);
+}
+
+function getAnalysisIdForAggregator(reference: MonthwiseRef | undefined, selectedAggregator: "zomato" | "swiggy"): string {
+  const id = selectedAggregator === "zomato" ? reference?.zomatoAnalysis : reference?.swiggyAnalysis;
+  return id != null ? String(id) : "";
+}
+
+function getMonthOptionLabel(reference: MonthwiseRef): string {
+  const monthNumber = getReportMonthNumber(reference.month);
+  const monthLabel = monthNumber >= 1 && monthNumber <= 12 ? MONTH_NAMES[monthNumber - 1] : String(reference.month || "").trim();
+  return monthLabel && reference.year ? `${monthLabel} ${reference.year}` : monthLabel || "Unknown Month";
+}
+
+function formatCompactAmount(amount: number | string | null | undefined): string {
+  const numValue = Number.parseFloat(String(amount ?? 0)) || 0;
+
+  if (numValue >= 10000000) {
+    const crores = numValue / 10000000;
+    return crores % 1 === 0 ? `${crores.toFixed(0)}Cr` : `${crores.toFixed(1)}Cr`;
+  }
+
+  if (numValue >= 100000) {
+    const lakhs = numValue / 100000;
+    return lakhs % 1 === 0 ? `${lakhs.toFixed(0)}L` : `${lakhs.toFixed(1)}L`;
+  }
+
+  if (numValue >= 1000) {
+    const thousands = numValue / 1000;
+    return thousands % 1 === 0 ? `${thousands.toFixed(0)}K` : `${thousands.toFixed(1)}K`;
+  }
+
+  return numValue.toFixed(0);
+}
+
+function getOverallSales(monthwiseReferences: MonthwiseRef[], data: unknown): OverallSales {
+  const latestOverall = monthwiseReferences[0]?.overall;
+  if (latestOverall) {
+    return {
+      grossSales: latestOverall.gross_sales ?? 0,
+      netDeductions: latestOverall.net_deductions ?? 0,
+      netPayable: latestOverall.net_payout ?? 0,
+    };
+  }
+
+  const body = data as {
+    data?: {
+      monthwiseReferenceReports?: { overallSales?: OverallSales | null } | null;
+    };
+    monthwiseReferenceReports?: { overallSales?: OverallSales | null } | null;
+  };
+
+  return body?.data?.monthwiseReferenceReports?.overallSales || body?.monthwiseReferenceReports?.overallSales || {};
+}
+
+type TemplateNode = {
+  value?: string | number | null;
+  components?: string[];
+  nested_components?: string[];
+  simple_components?: string[];
+  components_arithmetic_value?: string | number | null;
+  [key: string]: unknown;
+};
+
+type CalculatedSolution = {
+  profit?: { value?: string | number | null; message?: string; exceeds_limit?: boolean };
+  suggession?: string[]; // Note: Spelt 'suggession' in backend API response
+  online_sales?: { value?: string | number | null };
+  actual_ads_spent?: { value?: string | number | null; message?: string };
+  actual_commissions_tax_pg?: { value?: string | number | null; message?: string };
+  online_net_difference_with_dine_in?: { value?: string | number | null; message?: string };
+};
+
+type CalculatedTemplate = Record<string, TemplateNode | string | number | null | undefined>;
+
+
+
+const MOCK_ANALYSES: AnalysisReport[] = [
+  { id: "report-june-2026", month: "June 2026", createdAt: "2026-06-20T10:00:00Z", zomatoAnalysis: "report-june-2026", swiggyAnalysis: "report-june-2026-swiggy" },
+  { id: "report-may-2026", month: "May 2026", createdAt: "2026-05-18T10:00:00Z", zomatoAnalysis: "report-may-2026", swiggyAnalysis: "report-may-2026-swiggy" },
+  { id: "report-april-2026", month: "April 2026", createdAt: "2026-04-15T10:00:00Z", zomatoAnalysis: "report-april-2026", swiggyAnalysis: "report-april-2026-swiggy" },
+];
+
+const MOCK_MONTHWISE: MonthwiseRef[] = [
+  { month: "Jan 2026", total_sales: 85000 },
+  { month: "Feb 2026", total_sales: 92000 },
+  { month: "Mar 2026", total_sales: 110000 },
+  { month: "Apr 2026", total_sales: 105000 },
+  { month: "May 2026", total_sales: 125000 },
+  { month: "Jun 2026", total_sales: 150000 },
+];
+
+const MOCK_DETAILS: Record<string, { calculatedTemplate: CalculatedTemplate }> = {
+  "report-june-2026": {
+    calculatedTemplate: {
+      total_orders: {
+        value: 152,
+        total_delivered_orders: { value: 148 },
+        total_incomplete_orders: { value: 4 },
+      },
+      gross_sales: {
+        value: 150000,
+        item_subtotal: { value: 140000 },
+        packaging_charges: { value: 7000 },
+        gst_collected_from_customers: { value: 3000 },
+      },
+      total_commisionable_value: {
+        value: 150000,
+        commisionable_subtotal: { value: 140000 },
+        commisionable_packaging_charge: { value: 7000 },
+        commisionable_gst_collected_from_customers: { value: 3000 },
+      },
+      net_deductions: {
+        value: 55500,
+        service_fee: {
+          value: 33000,
+          basic_service_fee: { value: 30000 },
+          long_distance_fee: { value: 2000 },
+          payment_gateway_fee: { value: 1000 },
+        },
+        taxes_on_service_fee: { value: 5940 },
+        discounts: { value: 2000 },
+        other_order_level_deductions: {
+          value: 1560,
+          customer_compensation: { value: 500 },
+          rejection_penalty: { value: 1060 },
+        },
+        advertisements: {
+          value: 10000,
+          total_ads: { value: 8000 },
+          total_dining_ads: { value: 2000 },
+        },
+        additional_tax_deductions: {
+          value: 3000,
+          tds: { value: 1500 },
+          tcs: { value: 1500 },
+        },
+      },
+      net_additions: {
+        value: 12000,
+        cancellation_refund: { value: 5000 },
+        tips_for_kitchen_staff: { value: 2000 },
+        tds_194h: { value: 1000 },
+        gst_paid_by_restaurant: { value: 1500 },
+        other_additions: {
+          value: 2500,
+          self_delivery_charge: { value: 1500 },
+          brand_pack_subscription_fee: { value: 1000 },
+        },
+      },
+      net_payout: {
+        value: 106500,
+        amount_settled: { value: 100000 },
+        amount_pending: { value: 6500 },
+      },
+    },
+  },
+  "report-june-2026-swiggy": {
+    calculatedTemplate: {
+      total_orders: {
+        value: 180,
+        total_delivered_orders: { value: 172 },
+        total_incomplete_orders: { value: 8 },
+      },
+      gross_sales: {
+        value: 170000,
+        item_subtotal: { value: 158000 },
+        packaging_charges: { value: 8000 },
+        gst_collected_from_customers: { value: 4000 },
+      },
+      total_commisionable_value: {
+        value: 170000,
+        commisionable_subtotal: { value: 158000 },
+        commisionable_packaging_charge: { value: 8000 },
+        commisionable_gst_collected_from_customers: { value: 4000 },
+      },
+      net_deductions: {
+        value: 65900,
+        service_fee: {
+          value: 37400,
+          basic_service_fee: { value: 34000 },
+          long_distance_fee: { value: 2400 },
+          payment_gateway_fee: { value: 1000 },
+        },
+        taxes_on_service_fee: { value: 6732 },
+        discounts: { value: 3000 },
+        other_order_level_deductions: {
+          value: 2000,
+          customer_compensation: { value: 800 },
+          rejection_penalty: { value: 1200 },
+        },
+        advertisements: {
+          value: 13000,
+          total_ads: { value: 10000 },
+          total_dining_ads: { value: 3000 },
+        },
+        additional_tax_deductions: {
+          value: 3768,
+          tds: { value: 1884 },
+          tcs: { value: 1884 },
+        },
+      },
+      net_additions: {
+        value: 15000,
+        cancellation_refund: { value: 6000 },
+        tips_for_kitchen_staff: { value: 2500 },
+        tds_194h: { value: 1200 },
+        gst_paid_by_restaurant: { value: 1800 },
+        other_additions: {
+          value: 3500,
+          self_delivery_charge: { value: 2000 },
+          brand_pack_subscription_fee: { value: 1500 },
+        },
+      },
+      net_payout: {
+        value: 119100,
+        amount_settled: { value: 110000 },
+        amount_pending: { value: 9100 },
+      },
+    },
+  },
+  "report-may-2026": {
+    calculatedTemplate: {
+      total_orders: {
+        value: 120,
+        total_delivered_orders: { value: 115 },
+        total_incomplete_orders: { value: 5 },
+      },
+      gross_sales: {
+        value: 125000,
+        item_subtotal: { value: 116000 },
+        packaging_charges: { value: 6000 },
+        gst_collected_from_customers: { value: 3000 },
+      },
+      total_commisionable_value: {
+        value: 125000,
+        commisionable_subtotal: { value: 116000 },
+        commisionable_packaging_charge: { value: 6000 },
+        commisionable_gst_collected_from_customers: { value: 3000 },
+      },
+      net_deductions: {
+        value: 43750,
+        service_fee: {
+          value: 27500,
+          basic_service_fee: { value: 25000 },
+          long_distance_fee: { value: 1500 },
+          payment_gateway_fee: { value: 1000 },
+        },
+        taxes_on_service_fee: { value: 4950 },
+        discounts: { value: 1500 },
+        other_order_level_deductions: {
+          value: 800,
+          customer_compensation: { value: 300 },
+          rejection_penalty: { value: 500 },
+        },
+        advertisements: {
+          value: 6500,
+          total_ads: { value: 5000 },
+          total_dining_ads: { value: 1500 },
+        },
+        additional_tax_deductions: {
+          value: 2500,
+          tds: { value: 1250 },
+          tcs: { value: 1250 },
+        },
+      },
+      net_additions: {
+        value: 9000,
+        cancellation_refund: { value: 4000 },
+        tips_for_kitchen_staff: { value: 1500 },
+        tds_194h: { value: 800 },
+        gst_paid_by_restaurant: { value: 1000 },
+        other_additions: {
+          value: 1700,
+          self_delivery_charge: { value: 1000 },
+          brand_pack_subscription_fee: { value: 700 },
+        },
+      },
+      net_payout: {
+        value: 90250,
+        amount_settled: { value: 85000 },
+        amount_pending: { value: 5250 },
+      },
+    },
+  },
+  "report-may-2026-swiggy": {
+    calculatedTemplate: {
+      total_orders: {
+        value: 130,
+        total_delivered_orders: { value: 122 },
+        total_incomplete_orders: { value: 8 },
+      },
+      gross_sales: {
+        value: 135000,
+        item_subtotal: { value: 125000 },
+        packaging_charges: { value: 7000 },
+        gst_collected_from_customers: { value: 3000 },
+      },
+      total_commisionable_value: {
+        value: 135000,
+        commisionable_subtotal: { value: 125000 },
+        commisionable_packaging_charge: { value: 7000 },
+        commisionable_gst_collected_from_customers: { value: 3000 },
+      },
+      net_deductions: {
+        value: 51450,
+        service_fee: {
+          value: 29700,
+          basic_service_fee: { value: 27000 },
+          long_distance_fee: { value: 1700 },
+          payment_gateway_fee: { value: 1000 },
+        },
+        taxes_on_service_fee: { value: 5346 },
+        discounts: { value: 2000 },
+        other_order_level_deductions: {
+          value: 1000,
+          customer_compensation: { value: 400 },
+          rejection_penalty: { value: 600 },
+        },
+        advertisements: {
+          value: 10000,
+          total_ads: { value: 8000 },
+          total_dining_ads: { value: 2000 },
+        },
+        additional_tax_deductions: {
+          value: 3404,
+          tds: { value: 1702 },
+          tcs: { value: 1702 },
+        },
+      },
+      net_additions: {
+        value: 11000,
+        cancellation_refund: { value: 4500 },
+        tips_for_kitchen_staff: { value: 1800 },
+        tds_194h: { value: 900 },
+        gst_paid_by_restaurant: { value: 1200 },
+        other_additions: {
+          value: 2600,
+          self_delivery_charge: { value: 1500 },
+          brand_pack_subscription_fee: { value: 1100 },
+        },
+      },
+      net_payout: {
+        value: 94550,
+        amount_settled: { value: 90000 },
+        amount_pending: { value: 4550 },
+      },
+    },
+  },
+};
+
+
+
+function ProfitLossIndicator({
+  reference,
+  aggregator,
+}: {
+  reference?: MonthwiseRef;
+  aggregator: "zomato" | "swiggy";
+}) {
+  if (!reference) return null;
+
+  const platformName = aggregator === "swiggy" ? "Swiggy" : "Zomato";
+  const platformLogo = aggregator === "swiggy" ? "/assets/Swiggy_logo.png" : "/assets/Zomato_logo.png";
+  const platformLossRisk = aggregator === "swiggy"
+    ? reference.swiggyProfitExceedsLimit
+    : reference.zomatoProfitExceedsLimit;
+  const suggestions = aggregator === "swiggy"
+    ? reference.swiggyProfitSuggestion
+    : reference.zomatoProfitSuggestion;
+  const isLossRisk = platformLossRisk ?? reference.profitExceedsLimit ?? false;
+  const statusTitle = isLossRisk ? `${platformName} needs attention` : `${platformName} is profitable`;
+  const statusMessage = isLossRisk
+    ? reference.profitMessage || "Profitability needs improvement"
+    : "Profit is within the healthy range for this platform.";
+
   return (
-    <div data-testid="soa-decode">
-      <label className="block cursor-pointer rounded-2xl border-2 border-dashed border-bd-teal/40 p-8 text-center hover:bg-bd-mintMuted/40">
-        <input type="file" className="hidden" accept=".pdf,.csv,.xls,.xlsx" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
-        <Upload size={28} className="mx-auto text-bd-teal" />
-        <p className="mt-3 font-display text-lg font-extrabold text-bd-tealDeep">{busy ? "Decoding…" : "Drop or click to upload SOA"}</p>
-        <p className="mt-1 text-xs text-bd-inkSoft">PDF · CSV · XLS — up to 25 MB</p>
-      </label>
-      {err && <p className="mt-3 text-sm text-red-600">{err}</p>}
-      {r && (
-        <div className="mt-6 rounded-2xl border border-bd-border bg-bd-section p-6">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <p className="overline text-bd-teal">{r.filename}</p>
-              <p className="font-display text-3xl font-black text-bd-tealDeep">Net ₹ {r.net_payout.toLocaleString("en-IN")}</p>
+    <section className={`mx-auto w-full max-w-2xl rounded-2xl border p-4 ${isLossRisk
+        ? "border-red-100 bg-red-50/60"
+        : "border-emerald-100 bg-emerald-50/60"
+      }`}>
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white bg-white shadow-sm">
+          <img
+            src={platformLogo}
+            alt={platformName}
+            className={aggregator === "swiggy" ? "h-[82%] w-[82%] object-contain" : "h-full w-full object-contain"}
+          />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className={`text-xs font-black uppercase tracking-wider ${isLossRisk ? "text-red-700" : "text-emerald-700"
+              }`}>
+              {statusTitle}
+            </p>
+            <span className={`h-2 w-2 rounded-full ${isLossRisk ? "bg-red-500" : "bg-emerald-500"}`} />
+          </div>
+          <p className="mt-1 text-sm font-semibold text-bd-tealDeep">
+            {statusMessage}
+          </p>
+
+          {suggestions && suggestions.length > 0 && (
+            <div className="mt-3 rounded-xl border border-white/80 bg-white/70 p-3">
+              <p className="text-[10px] font-black uppercase tracking-wider text-bd-inkSoft">Suggestions</p>
+              <ul className="mt-2 space-y-1.5">
+                {suggestions.map((suggestion) => (
+                  <li key={suggestion} className="flex gap-2 text-xs font-semibold leading-relaxed text-bd-tealDeep">
+                    <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${isLossRisk ? "bg-red-500" : "bg-emerald-500"}`} />
+                    <span>{suggestion}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
-            <span className="rounded-full bg-bd-mint px-3 py-1 text-xs font-bold text-bd-tealDeep">Margin {r.margin_pct}%</span>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type ExpandableTilesProps = {
+  title: string;
+  totalAmount: string;
+  data: {
+    components: Record<string, unknown>[];
+  };
+  showRupeeIcon?: boolean;
+  showPieChart?: boolean;
+  pieColors?: string[];
+  noNeedtoShowDots?: boolean;
+};
+
+function ExpandableTiles({
+  title,
+  totalAmount,
+  data,
+  showRupeeIcon = true,
+  showPieChart = false,
+  pieColors,
+  noNeedtoShowDots = false,
+}: ExpandableTilesProps) {
+  const components = data?.components || [];
+  const [expandedSubKeys, setExpandedSubKeys] = useState<Record<string, boolean>>({});
+
+  const toggleSubKey = (key: string) => {
+    setExpandedSubKeys(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const formatDisplayValue = (val: string | number | unknown) => {
+    if (val == null) return "0";
+    const strVal = String(val);
+    const num = Number(strVal);
+    if (isNaN(num)) return strVal;
+    const formatted = num.toFixed(2);
+    if (formatted.endsWith(".00")) return formatted.slice(0, -3);
+    return formatted;
+  };
+
+  const colors = pieColors && pieColors.length > 0 ? pieColors : ["#10b981", "#f59e0b", "#3b82f6", "#8b5cf6", "#ec4899"];
+  const circ = 2 * Math.PI * 50; // ~314.16
+
+  const parsedValues = components.map(c => {
+    const key = Object.keys(c).find(k => k !== "splitups") || "";
+    const valStr = key ? String(c[key] ?? "") : "";
+    const val = Number(valStr.replace(/[^0-9.-]/g, ""));
+    const splitups = c.splitups as Record<string, unknown>[] | undefined;
+    return { key, val: isNaN(val) ? 0 : val, splitups };
+  }).filter(item => item.key !== "");
+
+  const sum = parsedValues.reduce((acc, curr) => acc + Math.abs(curr.val), 0);
+
+  let accumulatedPercent = 0;
+  const segments = parsedValues.map((item, idx) => {
+    const percent = sum > 0 ? Math.abs(item.val) / sum : 0;
+    const strokeDasharray = `${percent * circ} ${circ}`;
+    const strokeDashoffset = -accumulatedPercent * circ;
+    accumulatedPercent += percent;
+    return {
+      ...item,
+      strokeDasharray,
+      strokeDashoffset,
+      color: colors[idx % colors.length],
+    };
+  });
+
+  return (
+    <div className="mx-auto w-full max-w-2xl rounded-2xl border border-bd-border bg-white shadow-sm overflow-hidden animate-in fade-in duration-200">
+      <div
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left border-b border-bd-border bg-neutral-50/10"
+      >
+        <span className="text-[10px] font-black uppercase tracking-wider text-bd-inkSoft">
+          {title}
+        </span>
+        <span className="font-display text-lg font-black text-bd-tealDeep">
+          {showRupeeIcon ? `₹ ${formatDisplayValue(totalAmount)}` : formatDisplayValue(totalAmount)}
+        </span>
+      </div>
+
+      <div className="px-4 pb-3 pt-3 bg-neutral-50/30">
+        {showPieChart && components.length > 0 ? (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-6 py-2">
+            <div className="relative flex items-center justify-center h-28 w-28 shrink-0">
+              <svg viewBox="0 0 160 160" className="w-full h-full transform -rotate-90">
+                {segments.map((seg, idx) => (
+                  <circle
+                    key={idx}
+                    cx="80"
+                    cy="80"
+                    r="50"
+                    fill="transparent"
+                    stroke={seg.color}
+                    strokeWidth="20"
+                    strokeDasharray={seg.strokeDasharray}
+                    strokeDashoffset={seg.strokeDashoffset}
+                  />
+                ))}
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
+                <span className="text-[8px] uppercase tracking-wider text-bd-inkSoft font-bold">Total</span>
+                <span className="font-display text-[10px] font-black text-bd-tealDeep truncate max-w-full">
+                  {showRupeeIcon ? `₹${formatDisplayValue(totalAmount)}` : formatDisplayValue(totalAmount)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex-1 w-full space-y-2">
+              {segments.map((seg, idx) => {
+                const hasSplitups = seg.splitups && seg.splitups.length > 0;
+                const isSubExpanded = !!expandedSubKeys[seg.key];
+                const splitupItems = hasSplitups ? Object.entries(seg.splitups![0]) : [];
+
+                return (
+                  <div key={idx} className="space-y-1">
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-bd-section px-3 py-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        {!noNeedtoShowDots && (
+                          <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: seg.color }} />
+                        )}
+                        <div className="flex items-center gap-1">
+                          <span className="font-semibold text-bd-inkSoft">{seg.key}</span>
+                          {hasSplitups && (
+                            <button
+                              type="button"
+                              onClick={() => toggleSubKey(seg.key)}
+                              className="p-0.5 rounded hover:bg-neutral-200/50 text-bd-inkSoft transition duration-150 flex items-center justify-center"
+                              aria-label={`Toggle details for ${seg.key}`}
+                            >
+                              <ChevronDown
+                                size={12}
+                                className={`transform transition-transform duration-150 ${isSubExpanded ? "rotate-180" : ""}`}
+                              />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <span className="font-black text-bd-tealDeep">
+                        {showRupeeIcon ? `₹ ${formatDisplayValue(seg.val)}` : formatDisplayValue(seg.val)}
+                      </span>
+                    </div>
+
+                    {hasSplitups && isSubExpanded && (
+                      <div
+                        className="pl-5 pr-2 py-1 space-y-1 border-l-2 border-dashed ml-3.5 animate-in slide-in-from-top-1 duration-150"
+                        style={{ borderLeftColor: seg.color }}
+                      >
+                        {splitupItems.map(([subKey, subVal]) => (
+                          <div key={subKey} className="flex justify-between items-center text-[10px] py-1 text-bd-inkSoft">
+                            <span className="font-medium">{subKey}</span>
+                            <span className="font-bold text-bd-tealDeep">
+                              {showRupeeIcon ? `₹ ${formatDisplayValue(subVal)}` : formatDisplayValue(subVal)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat label="Gross" value={`₹ ${r.gross_sales.toLocaleString("en-IN")}`} />
-            <Stat label="Commission" value={`₹ ${r.commission.toLocaleString("en-IN")}`} />
-            <Stat label="Ads" value={`₹ ${r.advertising.toLocaleString("en-IN")}`} />
-            <Stat label="Taxes" value={`₹ ${r.taxes.toLocaleString("en-IN")}`} />
-          </div>
-          <ul className="mt-5 space-y-2">
-            {r.insights.map((t, i) => (<li key={i} className="flex items-start gap-2 text-sm"><Sparkles size={14} className="mt-0.5 text-bd-teal" />{t}</li>))}
-          </ul>
+        ) : (
+          components.length > 0 ? (
+            <div className="space-y-2">
+              {components.map((component, idx) => {
+                const key = Object.keys(component).find(k => k !== "splitups")!;
+                const value = component[key];
+                const splitups = component.splitups as Record<string, unknown>[] | undefined;
+                const hasSplitups = splitups && splitups.length > 0;
+                const isSubExpanded = !!expandedSubKeys[key];
+                const splitupItems = hasSplitups ? Object.entries(splitups![0]) : [];
+
+                return (
+                  <div key={idx} className="space-y-1">
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-bd-section px-3 py-2 text-xs">
+                      <div className="flex items-center gap-1">
+                        <span className="font-semibold text-bd-inkSoft">{key}</span>
+                        {hasSplitups && (
+                          <button
+                            type="button"
+                            onClick={() => toggleSubKey(key)}
+                            className="p-0.5 rounded hover:bg-neutral-200/50 text-bd-inkSoft transition duration-150 flex items-center justify-center"
+                            aria-label={`Toggle details for ${key}`}
+                          >
+                            <ChevronDown
+                              size={12}
+                              className={`transform transition-transform duration-150 ${isSubExpanded ? "rotate-180" : ""}`}
+                            />
+                          </button>
+                        )}
+                      </div>
+                      <span className="font-black text-bd-tealDeep">
+                        {showRupeeIcon ? `₹ ${formatDisplayValue(value)}` : formatDisplayValue(value)}
+                      </span>
+                    </div>
+
+                    {hasSplitups && isSubExpanded && (
+                      <div className="pl-5 pr-2 py-1 space-y-1 border-l-2 border-dashed border-neutral-200/60 ml-2.5 animate-in slide-in-from-top-1 duration-150">
+                        {splitupItems.map(([subKey, subVal]) => (
+                          <div key={subKey} className="flex justify-between items-center text-[10px] py-1 text-bd-inkSoft">
+                            <span className="font-medium">{subKey}</span>
+                            <span className="font-bold text-bd-tealDeep">
+                              {showRupeeIcon ? `₹ ${formatDisplayValue(subVal)}` : formatDisplayValue(subVal)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-xs font-semibold text-bd-inkSoft">No component breakup available.</p>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── CompareGrossSaleCard ── */
+function parsePercentageValue(value: string): number {
+  return Number(value.replace(/[^0-9.]/g, "")) || 0;
+}
+
+function formatCurrencyAmount(value: number): string {
+  if (value >= 10000000) return `${(value / 10000000).toFixed(2)} Cr`;
+  if (value >= 100000) return `${(value / 100000).toFixed(2)} L`;
+  if (value >= 1000) return `${(value / 1000).toFixed(2)} K`;
+  return value.toFixed(2);
+}
+
+function CompareGrossSaleCard({ data }: { data?: MonthwiseRef | null }) {
+  const compareData = data?.compare;
+  const zomatoSales = compareData?.zomatoSales ?? 0;
+  const swiggySales = compareData?.swiggySales ?? 0;
+  const totalSales = data?.total_sales ?? (zomatoSales + swiggySales);
+
+  const zomatoPercentString = compareData?.zomatoPercentageOfTotalSales ?? "0%";
+  const swiggyPercentString = compareData?.swiggyPercentageOfTotalSales ?? "0%";
+
+  let zomatoPercent = parsePercentageValue(zomatoPercentString);
+  let swiggyPercent = parsePercentageValue(swiggyPercentString);
+
+  // Ensure chart renders even with no data
+  const effectiveZomatoPercent = (zomatoPercent === 0 && swiggyPercent === 0) ? 1 : zomatoPercent;
+  const displayZomatoPercent = zomatoPercent; // keep original for label
+
+  const percentageChange = data?.percentageChangeFromLastMonth;
+  const isPositiveChange =
+    percentageChange != null && !String(percentageChange).startsWith("-");
+
+  const chartData = [
+    { name: "Zomato", value: effectiveZomatoPercent },
+    { name: "Swiggy", value: swiggyPercent || (effectiveZomatoPercent === 1 && zomatoPercent === 0 ? 0 : swiggyPercent) },
+  ];
+
+  const COLORS = ["#FF3054", "#E38827"];
+
+  return (
+    <div className="rounded-2xl bg-[#F8F9FA] p-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-black">Gross Sale</span>
+        <span className="text-lg font-bold text-black">
+          ₹ {formatCurrencyAmount(totalSales)}
+        </span>
+      </div>
+
+      {/* Percentage change */}
+      {percentageChange != null && (
+        <div className={`mt-1 flex items-center text-xs font-semibold ${
+          isPositiveChange ? "text-green-600" : "text-red-500"
+        }`}>
+          {isPositiveChange
+            ? <ArrowUp size={14} className="mr-0.5" />
+            : <ArrowDown size={14} className="mr-0.5" />}
+          <span>{String(percentageChange)}</span>
         </div>
       )}
+
+      {/* Donut Chart */}
+      <div className="h-[200px] flex items-center justify-center mt-5 relative">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={chartData}
+              cx="50%"
+              cy="50%"
+              innerRadius={55}
+              outerRadius={85}
+              dataKey="value"
+              startAngle={90}
+              endAngle={-270}
+              strokeWidth={0}
+            >
+              {chartData.map((_, index) => (
+                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              ))}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+        {/* Center logos overlay */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="flex gap-1">
+            <img
+              src="/assets/Zomato_logo.png"
+              alt="Zomato"
+              className="h-6 w-6 rounded-full object-contain border border-gray-200 bg-white"
+            />
+            <img
+              src="/assets/Swiggy_logo.png"
+              alt="Swiggy"
+              className="h-6 w-6 rounded-full object-contain border border-gray-200 bg-white"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="mt-5 space-y-3">
+        {/* Zomato row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="h-3 w-3 rounded-full flex-shrink-0" style={{ backgroundColor: "#FF3054" }} />
+            <span className="text-sm text-black font-normal">
+              Zomato ( {zomatoPercentString} )
+            </span>
+          </div>
+          <span className="text-sm font-semibold text-black">
+            ₹ {formatCurrencyAmount(zomatoSales)}
+          </span>
+        </div>
+        {/* Swiggy row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="h-3 w-3 rounded-full flex-shrink-0" style={{ backgroundColor: "#E38827" }} />
+            <span className="text-sm text-black font-normal">
+              Swiggy ( {swiggyPercentString} )
+            </span>
+          </div>
+          <span className="text-sm font-semibold text-black">
+            ₹ {formatCurrencyAmount(swiggySales)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function CompareTable({
+  aggregator,
+  reference,
+  monthwiseReferenceReports,
+}: {
+  aggregator?: "zomato" | "swiggy" | null;
+  reference?: MonthwiseRef | null;
+  monthwiseReferenceReports?: MonthwiseRef[];
+}) {
+  if (!reference?.compare?.percentages || reference.compare.percentages.length === 0) {
+    return null;
+  }
+
+  const isZomato = aggregator?.toLowerCase() === "zomato";
+  const isSwiggy = aggregator?.toLowerCase() === "swiggy";
+  const isCompare = !aggregator;
+
+  function calculatePercentageChange(
+    reports: MonthwiseRef[] | undefined,
+    current: MonthwiseRef,
+    forZomato: boolean,
+  ): string | null {
+    if (!reports || reports.length === 0) return null;
+    const currentMonthRaw = current.month;
+    const currentYear = current.year;
+    if (currentMonthRaw == null || currentYear == null) return null;
+
+    const currentMonth = typeof currentMonthRaw === "number"
+      ? currentMonthRaw
+      : getReportMonthNumber(currentMonthRaw);
+    if (!currentMonth) return null;
+
+    let prevMonth = currentMonth - 1;
+    let prevYear = currentYear;
+    if (prevMonth === 0) {
+      prevMonth = 12;
+      prevYear = currentYear - 1;
+    }
+
+    const prevReport = reports.find((r) => {
+      const rMonth = typeof r.month === "number" ? r.month : getReportMonthNumber(r.month);
+      return rMonth === prevMonth && r.year === prevYear;
+    });
+    if (!prevReport) return null;
+
+    const currentSales = forZomato ? current.compare?.zomatoSales : current.compare?.swiggySales;
+    const prevSales = forZomato ? prevReport.compare?.zomatoSales : prevReport.compare?.swiggySales;
+
+    if (currentSales == null || prevSales == null || prevSales === 0) return null;
+    const change = ((currentSales - prevSales) / prevSales) * 100;
+    return `${change.toFixed(2)}%`;
+  }
+
+  function buildRow(
+    label: string,
+    zomato: string,
+    swiggy: string,
+  ) {
+    const head = label.toLowerCase().trim();
+    const isSpecialHead =
+      head.includes("profit") ||
+      (head.includes("percentage change") && head.includes("last month"));
+
+    const isZomatoNegative = isSpecialHead && zomato.trim().startsWith("-");
+    const isSwiggyNegative = isSpecialHead && swiggy.trim().startsWith("-");
+
+    return (
+      <div key={label} className="contents">
+        {/* Label cell */}
+        <div className="my-1 rounded-lg bg-[#E9FBF0] px-3 py-3">
+          <span className="text-[13px] font-medium leading-snug line-clamp-2">{label}</span>
+        </div>
+        {/* Zomato value cell */}
+        {(isZomato || isCompare) && (
+          <div className={`my-1 mx-1 rounded-lg px-3 py-3 flex items-center justify-center ${
+            isZomatoNegative ? "bg-[#FDE8E8]" : "bg-[#E9FBF0]"
+          }`}>
+            <span className={`text-[13px] font-bold text-center ${
+              isZomatoNegative ? "text-[#C81E1E]" : "text-[#006736]"
+            }`}>{zomato}</span>
+          </div>
+        )}
+        {/* Swiggy value cell */}
+        {(isSwiggy || isCompare) && (
+          <div className={`my-1 mx-1 rounded-lg px-3 py-3 flex items-center justify-center ${
+            isSwiggyNegative ? "bg-[#FDE8E8]" : "bg-[#E9FBF0]"
+          }`}>
+            <span className={`text-[13px] font-bold text-center ${
+              isSwiggyNegative ? "text-[#C81E1E]" : "text-[#006736]"
+            }`}>{swiggy}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const colCount = 1 + (isZomato || isCompare ? 1 : 0) + (isSwiggy || isCompare ? 1 : 0);
+  const gridClass = colCount === 3
+    ? "grid-cols-[1.5fr_1fr_1fr]"
+    : colCount === 2
+    ? "grid-cols-[1.5fr_1fr]"
+    : "grid-cols-1";
+
+  return (
+    <div className={`rounded-xl bg-[#F2F2F2] p-4 mt-5`}>
+      <div className={`grid ${gridClass} gap-x-1`}>
+        {/* Header row */}
+        <div />
+        {(isZomato || isCompare) && (
+          <div className="flex justify-center py-2">
+            <img src="/assets/Zomato_logo.png" alt="Zomato" className="h-10 w-10 rounded-full object-contain border border-gray-200 bg-white" />
+          </div>
+        )}
+        {(isSwiggy || isCompare) && (
+          <div className="flex justify-center py-2">
+            <img src="/assets/Swiggy_logo.png" alt="Swiggy" className="h-10 w-10 rounded-full object-contain border border-gray-200 bg-white" />
+          </div>
+        )}
+
+        {/* Data rows */}
+        {reference.compare!.percentages!.map((e) => {
+          let zomatoVal = e.zomato ?? "0.00%";
+          let swiggyVal = e.swiggy ?? "0.00%";
+
+          const head = e.head?.toLowerCase() ?? "";
+          if (head.includes("percentage change") && head.includes("last month")) {
+            if (!e.zomato || e.zomato === "0.00%" || e.zomato === "0" || e.zomato === "null") {
+              if (!isCompare && isZomato) {
+                zomatoVal = String(reference.percentageChangeFromLastMonth ?? zomatoVal);
+              } else if (isCompare) {
+                zomatoVal = calculatePercentageChange(monthwiseReferenceReports, reference, true) ?? zomatoVal;
+              }
+            }
+            if (!e.swiggy || e.swiggy === "0.00%" || e.swiggy === "0" || e.swiggy === "null") {
+              if (!isCompare && isSwiggy) {
+                swiggyVal = String(reference.percentageChangeFromLastMonth ?? swiggyVal);
+              } else if (isCompare) {
+                swiggyVal = calculatePercentageChange(monthwiseReferenceReports, reference, false) ?? swiggyVal;
+              }
+            }
+          }
+
+          return buildRow(e.head ?? "", zomatoVal, swiggyVal);
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SoaAnalyser({
+  selectedRestaurant,
+  onLatestAnalyticsLabel,
+  selectedAnalysisId: externalSelectedAnalysisId,
+  onSelectedAnalysisIdChange,
+  onMonthOptionsChange,
+}: {
+  selectedRestaurant: Restaurant | null;
+  onLatestAnalyticsLabel?: (label: string) => void;
+  selectedAnalysisId?: string;
+  onSelectedAnalysisIdChange?: (value: string) => void;
+  onMonthOptionsChange?: (options: SoaMonthOption[]) => void;
+}) {
+  const [analyses, setAnalyses] = useState<AnalysisReport[]>([]);
+  const [monthwiseRef, setMonthwiseRef] = useState<MonthwiseRef[]>([]);
+  const [overallSales, setOverallSales] = useState<OverallSales>({});
+  const [selectedAnalysisId, setInternalSelectedAnalysisId] = useState<string>(externalSelectedAnalysisId || "");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [aggregator, setAggregator] = useState<"zomato" | "swiggy">("zomato");
+  const [isCompareMode, setIsCompareMode] = useState<boolean>(false);
+  const [details, setDetails] = useState<Partial<AnalysisReport> | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState<boolean>(false);
+
+  const setSelectedAnalysisId = useCallback((value: string) => {
+    setInternalSelectedAnalysisId(value);
+    onSelectedAnalysisIdChange?.(value);
+  }, [onSelectedAnalysisIdChange]);
+
+  useEffect(() => {
+    if (externalSelectedAnalysisId !== undefined && externalSelectedAnalysisId !== selectedAnalysisId) {
+      setInternalSelectedAnalysisId(externalSelectedAnalysisId);
+    }
+  }, [externalSelectedAnalysisId, selectedAnalysisId]);
+
+
+
+
+
+  useEffect(() => {
+    if (!selectedRestaurant?.id) {
+      setAnalyses([]);
+      setMonthwiseRef([]);
+      setOverallSales({});
+      setSelectedAnalysisId("");
+      onLatestAnalyticsLabel?.("Latest Analytics");
+      onMonthOptionsChange?.([]);
+      return;
+    }
+
+    let activeRequest = true;
+
+    const fetchOverall = async () => {
+      setLoading(true);
+      try {
+        const { data } = await axios.get("/v1/analysis", {
+          timeout: 8000,
+          params: {
+            restaurant_id: selectedRestaurant.id,
+            compare_info: true,
+            overall_info: true,
+            analysis_info: true,
+          },
+        });
+        if (!activeRequest) return;
+
+        const analysesList = data?.data?.analyses || data?.analyses || [];
+        const monthwiseList = data?.data?.monthwiseReferenceReports || data?.monthwiseReferenceReports || data?.data?.monthwiseReference || data?.monthwiseReference || [];
+
+        setAnalyses(analysesList);
+        setMonthwiseRef(monthwiseList);
+        setOverallSales(getOverallSales(monthwiseList, data));
+        onLatestAnalyticsLabel?.(getLatestAnalyticsLabel(analysesList, monthwiseList));
+
+        if (monthwiseList.length > 0) {
+          const activeId = getAnalysisIdForAggregator(monthwiseList[0], "zomato");
+          setSelectedAnalysisId(activeId);
+        } else if (analysesList.length > 0) {
+          const firstReport = analysesList[0];
+          const activeId = String(firstReport.id);
+          setSelectedAnalysisId(activeId);
+        } else {
+          loadMockData();
+        }
+      } catch (error) {
+        if (!activeRequest) return;
+        console.warn("Using mock analysis data:", getApiErrorMessage(error, "Analysis data is not available."));
+        loadMockData();
+      } finally {
+        if (activeRequest) setLoading(false);
+      }
+    };
+
+    const loadMockData = () => {
+      setAnalyses(MOCK_ANALYSES);
+      setMonthwiseRef(MOCK_MONTHWISE);
+      setOverallSales({});
+      onLatestAnalyticsLabel?.(getLatestAnalyticsLabel(MOCK_ANALYSES, MOCK_MONTHWISE));
+      const activeId = getAnalysisIdForAggregator(MOCK_MONTHWISE[0], "zomato") || String(MOCK_ANALYSES[0].id);
+      setSelectedAnalysisId(activeId);
+    };
+
+    fetchOverall();
+    return () => {
+      activeRequest = false;
+    };
+  }, [onLatestAnalyticsLabel, onMonthOptionsChange, selectedRestaurant?.id, setSelectedAnalysisId]);
+
+  useEffect(() => {
+    if (monthwiseRef.length === 0) return;
+    onMonthOptionsChange?.(monthwiseRef.map((reference) => ({
+      value: getAnalysisIdForAggregator(reference, aggregator),
+      label: getMonthOptionLabel(reference),
+    })).filter((option) => option.value));
+    const activeId = getAnalysisIdForAggregator(monthwiseRef[0], aggregator);
+    if (activeId) setSelectedAnalysisId(activeId);
+  }, [aggregator, monthwiseRef, onMonthOptionsChange, setSelectedAnalysisId]);
+
+  useEffect(() => {
+    if (!selectedAnalysisId) {
+      setDetails(null);
+      return;
+    }
+
+    let activeRequest = true;
+
+    const fetchDetails = async () => {
+      setDetailsLoading(true);
+      try {
+        const { data } = await axios.get(`/v1/analysis/${selectedAnalysisId}`, { timeout: 8000 });
+        if (!activeRequest) return;
+        const reportDetails = data?.data || data;
+        setDetails(reportDetails);
+      } catch (error) {
+        if (!activeRequest) return;
+        console.warn("Details fetching failed:", error);
+        loadMockDetails();
+      } finally {
+        if (activeRequest) setDetailsLoading(false);
+      }
+    };
+
+    const loadMockDetails = () => {
+      const mockDet = MOCK_DETAILS[selectedAnalysisId] || MOCK_DETAILS["report-june-2026"];
+      setDetails(mockDet || null);
+    };
+
+    fetchDetails();
+    return () => {
+      activeRequest = false;
+    };
+  }, [selectedAnalysisId]);
+
+  const getNumberOfOrdersData = (totalOrdersNode: TemplateNode) => {
+    const components: Record<string, unknown>[] = [];
+    const addIfNotNull = (key: string, value: unknown) => {
+      if (value != null) {
+        components.push({ [key]: value });
+      }
+    };
+
+    const deliveredNode = totalOrdersNode.total_delivered_orders as TemplateNode | undefined;
+    const incompleteNode = totalOrdersNode.total_incomplete_orders as TemplateNode | undefined;
+
+    addIfNotNull("Total Orders Delivered", deliveredNode?.value);
+    addIfNotNull("Total Orders Cancelled/Rejected", incompleteNode?.value);
+
+    return { components };
+  };
+
+  const getGrossSalesData = (grossSalesNode: TemplateNode) => {
+    const components: Record<string, unknown>[] = [];
+    const addIfNotNull = (key: string, value: unknown) => {
+      if (value != null) {
+        components.push({ [key]: value });
+      }
+    };
+
+    const subtotalNode = grossSalesNode.item_subtotal as TemplateNode | undefined;
+    const packagingNode = grossSalesNode.packaging_charges as TemplateNode | undefined;
+    const gstNode = grossSalesNode.gst_collected_from_customers as TemplateNode | undefined;
+
+    addIfNotNull("Item Subtotal", subtotalNode?.value);
+    addIfNotNull("Packaging Charges", packagingNode?.value);
+    addIfNotNull("GST from customers", gstNode?.value);
+
+    return { components };
+  };
+
+  const getNetDeductionsData = (netDeductionsNode: TemplateNode, aggregatorName: string) => {
+    const components: Record<string, unknown>[] = [];
+    const buildSplitups = (items: Record<string, unknown>) => {
+      const map: Record<string, unknown> = {};
+      Object.entries(items).forEach(([key, value]) => {
+        if (value != null) map[key] = value;
+      });
+      return Object.keys(map).length === 0 ? null : map;
+    };
+
+    const serviceFee = netDeductionsNode.service_fee as TemplateNode | undefined;
+    const taxesOnServiceFee = netDeductionsNode.taxes_on_service_fee as TemplateNode | undefined;
+    const discounts = netDeductionsNode.discounts as TemplateNode | undefined;
+    const otherOrderLevelDeductions = netDeductionsNode.other_order_level_deductions as TemplateNode | undefined;
+    const advertisements = netDeductionsNode.advertisements as TemplateNode | undefined;
+    const additionalTaxDeductions = netDeductionsNode.additional_tax_deductions as TemplateNode | undefined;
+
+    const serviceFeeSplitups = serviceFee ? buildSplitups({
+      "Base Service Fee": (serviceFee.basic_service_fee as TemplateNode | undefined)?.value,
+      "Long Distance Fee": (serviceFee.long_distance_fee as TemplateNode | undefined)?.value,
+      "Payment Gateway": (serviceFee.payment_gateway_fee as TemplateNode | undefined)?.value,
+      "Discount on long distance enablement fee": (serviceFee.discount_on_long_distance_enablement_fee as TemplateNode | undefined)?.value,
+      "Discount on service fee due to 30% capping": (serviceFee.discount_on_service_fee_due_to_capping_30 as TemplateNode | undefined)?.value,
+    }) : null;
+
+    if (serviceFee?.value != null || serviceFeeSplitups) {
+      components.push({
+        "Service Fee": serviceFee?.value,
+        ...(serviceFeeSplitups ? { splitups: [serviceFeeSplitups] } : {}),
+      });
+    }
+
+    if (taxesOnServiceFee?.value != null) {
+      components.push({ "Taxes on Service Fee": taxesOnServiceFee.value });
+    }
+
+    if (discounts?.value != null) {
+      components.push({ "Discounts": discounts.value });
+    }
+
+    const otherDeductionsSplitups = otherOrderLevelDeductions ? buildSplitups({
+      "Customer compensation": (otherOrderLevelDeductions.customer_compensation as TemplateNode | undefined)?.value,
+      "Rejection penalty": (otherOrderLevelDeductions.rejection_penalty as TemplateNode | undefined)?.value,
+      "Delivery charges recovery": (otherOrderLevelDeductions.delivery_charges_recovery as TemplateNode | undefined)?.value,
+      "Credit note/ (Debit note) adjustment": (otherOrderLevelDeductions.credit_debit_note_adjustment as TemplateNode | undefined)?.value,
+      "Promo recovery adjustment": (otherOrderLevelDeductions.promo_recovery_adjustment as TemplateNode | undefined)?.value,
+      "Extra inventory ads (order level deduction)": (otherOrderLevelDeductions.extra_inventory_ads as TemplateNode | undefined)?.value,
+      "Brand loyalty points redemption": (otherOrderLevelDeductions.brand_loyalty_points_redemption as TemplateNode | undefined)?.value,
+      "Express order fee": (otherOrderLevelDeductions.express_order_fee as TemplateNode | undefined)?.value,
+      "Amount received in cash (on self delivery orders)": (otherOrderLevelDeductions.amount_received_in_cash as TemplateNode | undefined)?.value,
+      "Adjustments from previous period": (otherOrderLevelDeductions.adjustments_from_previous_period as TemplateNode | undefined)?.value,
+    }) : null;
+
+    if (otherOrderLevelDeductions?.value != null || otherDeductionsSplitups) {
+      components.push({
+        "Other order level deductions": otherOrderLevelDeductions?.value,
+        ...(otherDeductionsSplitups ? { splitups: [otherDeductionsSplitups] } : {}),
+      });
+    }
+
+    const adsSplitups = advertisements ? buildSplitups({
+      "Total Ads (inc. 18% GST)": (advertisements.total_ads as TemplateNode | undefined)?.value,
+      "Total Dining Ads (inc. 18% GST)": (advertisements.total_dining_ads as TemplateNode | undefined)?.value,
+      "Other growth services": (advertisements.other_growth_services as TemplateNode | undefined)?.value ?? "0.0",
+    }) : null;
+
+    if (advertisements?.value != null || adsSplitups) {
+      components.push({
+        "Advertisement": advertisements?.value,
+        ...(adsSplitups ? { splitups: [adsSplitups] } : {}),
+      });
+    }
+
+    const addTaxSplitups = additionalTaxDeductions ? buildSplitups({
+      "TDS 194O": (additionalTaxDeductions.tds as TemplateNode | undefined)?.value,
+      "TCS": (additionalTaxDeductions.tcs as TemplateNode | undefined)?.value,
+      [`5% GST collected & paid by ${aggregatorName}`]: (additionalTaxDeductions.gst_paid_by_aggregator as TemplateNode | undefined)?.value,
+    }) : null;
+
+    if (additionalTaxDeductions?.value != null || addTaxSplitups) {
+      components.push({
+        "Additional Tax Deductions": additionalTaxDeductions?.value,
+        ...(addTaxSplitups ? { splitups: [addTaxSplitups] } : {}),
+      });
+    }
+
+    return { components };
+  };
+
+  const getNetAdditionsData = (netAdditionsNode: TemplateNode) => {
+    const components: Record<string, unknown>[] = [];
+    const buildSplitups = (items: Record<string, unknown>) => {
+      const map: Record<string, unknown> = {};
+      Object.entries(items).forEach(([key, value]) => {
+        if (value != null) map[key] = value;
+      });
+      return Object.keys(map).length === 0 ? null : map;
+    };
+
+    const cancellationRefund = netAdditionsNode.cancellation_refund as TemplateNode | undefined;
+    const tipsForKitchenStaff = netAdditionsNode.tips_for_kitchen_staff as TemplateNode | undefined;
+    const tds194H = netAdditionsNode.tds_194h as TemplateNode | undefined;
+    const gstPaidByRestaurant = netAdditionsNode.gst_paid_by_restaurant as TemplateNode | undefined;
+    const otherAdditions = netAdditionsNode.other_additions as TemplateNode | undefined;
+
+    const addIfNotNull = (key: string, value: unknown) => {
+      if (value != null) {
+        components.push({ [key]: value });
+      }
+    };
+
+    addIfNotNull("Cancellation refund for cancelled orders", cancellationRefund?.value);
+    addIfNotNull("Tips for Kitchen Staff", tipsForKitchenStaff?.value);
+    addIfNotNull("TDS 194 H and other Res id level additions", tds194H?.value);
+    addIfNotNull("GST to be paid by Restaurant to govt", gstPaidByRestaurant?.value);
+
+    const splitups = otherAdditions ? buildSplitups({
+      "Delivery charge for restaurants on self logistics": (otherAdditions.self_delivery_charge as TemplateNode | undefined)?.value,
+      "Brand pack subscription fee": (otherAdditions.brand_pack_subscription_fee as TemplateNode | undefined)?.value,
+    }) : null;
+
+    if (otherAdditions?.value != null || splitups) {
+      components.push({
+        "Others Additions": otherAdditions?.value,
+        ...(splitups ? { splitups: [splitups] } : {}),
+      });
+    }
+
+    return { components };
+  };
+
+  const getNetPayoutData = (netPayoutNode: TemplateNode) => {
+    const components: Record<string, unknown>[] = [];
+    const addIfNotNull = (key: string, value: unknown) => {
+      if (value != null) {
+        components.push({ [key]: value });
+      }
+    };
+
+    const settledNode = netPayoutNode.amount_settled as TemplateNode | undefined;
+    const pendingNode = netPayoutNode.amount_pending as TemplateNode | undefined;
+
+    addIfNotNull("Amount Settled", settledNode?.value);
+    addIfNotNull("Pending Amount", pendingNode?.value);
+
+    return { components };
+  };
+
+  const getCommissionableValueData = (commissionableNode: TemplateNode) => {
+    const components: Record<string, unknown>[] = [];
+    const addIfNotNull = (key: string, value: unknown) => {
+      if (value != null) {
+        components.push({ [key]: value });
+      }
+    };
+
+    const subtotalNode = commissionableNode.commisionable_subtotal as TemplateNode | undefined;
+    const packagingNode = commissionableNode.commisionable_packaging_charge as TemplateNode | undefined;
+    const gstNode = commissionableNode.commisionable_gst_collected_from_customers as TemplateNode | undefined;
+
+    addIfNotNull("Commissionable Subtotal", subtotalNode?.value);
+    addIfNotNull("Packaging Charge", packagingNode?.value);
+    addIfNotNull("GST Collected", gstNode?.value);
+
+    return { components };
+  };
+
+  const commissionablePieColors = ["#3b82f6", "#10b981", "#8b5cf6", "#06b6d4", "#ec4899", "#f59e0b"];
+
+
+  const selectedMonthReference = monthwiseRef.find((reference) => {
+    return reference.zomatoAnalysis != null && String(reference.zomatoAnalysis) === selectedAnalysisId
+      || reference.swiggyAnalysis != null && String(reference.swiggyAnalysis) === selectedAnalysisId;
+  }) || monthwiseRef[0];
+  const overallAnalyticsLogos = [
+    selectedMonthReference?.zomatoAnalysis != null
+      ? { src: "/assets/Zomato_logo.png", alt: "Zomato" }
+      : null,
+    selectedMonthReference?.swiggyAnalysis != null
+      ? { src: "/assets/Swiggy_logo.png", alt: "Swiggy" }
+      : null,
+  ].filter(Boolean) as { src: string; alt: string }[];
+  const hasSelectedSwiggyAnalysis = selectedMonthReference?.swiggyAnalysis != null;
+  const hasSelectedZomatoAnalysis = selectedMonthReference?.zomatoAnalysis != null;
+
+  const payoutData = details?.calculatedTemplate;
+  const numberOfOrders = payoutData?.total_orders as TemplateNode | undefined;
+  const grossSales = payoutData?.gross_sales as TemplateNode | undefined;
+  const commissionableValue = payoutData?.total_commisionable_value as TemplateNode | undefined;
+  const netDeductions = payoutData?.net_deductions as TemplateNode | undefined;
+  const netAdditions = payoutData?.net_additions as TemplateNode | undefined;
+  const netPayout = payoutData?.net_payout as TemplateNode | undefined;
+
+  if (loading) {
+    return (
+      <div className="flex h-64 items-center justify-center" data-testid="soa-decode">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
+      </div>
+    );
+  }
+
+  if (!loading && analyses.length === 0) {
+    return (
+      <div className="rounded-3xl border border-dashed border-bd-border p-12 text-center" data-testid="soa-decode">
+        <p className="font-display text-lg font-extrabold text-bd-tealDeep">No reports available</p>
+        <p className="mt-1 text-sm text-bd-inkSoft">No performance analysis reports have been processed for this restaurant yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="soa-decode" className="space-y-6">
+      <section className="rounded-2xl border border-bd-border bg-white p-3 shadow-sm">
+        <div className="mb-3 flex items-center justify-center">
+          <div className="flex items-center justify-center gap-2.5">
+            <h3 className="font-display text-sm font-bold text-bd-tealDeep">Overall Analytics</h3>
+            {overallAnalyticsLogos.length > 0 && (
+              <div className="relative h-8 w-10">
+                {hasSelectedSwiggyAnalysis && (
+                  <span className="absolute bottom-0 left-0 flex h-5 w-5 items-center justify-center overflow-hidden rounded-full border border-bd-border bg-white shadow-sm">
+                    <img src="/assets/Swiggy_logo.png" alt="Swiggy" className="h-[82%] w-[82%] object-contain" />
+                  </span>
+                )}
+                {hasSelectedZomatoAnalysis && (
+                  <span
+                    className="absolute top-0 flex h-5 w-5 items-center justify-center overflow-hidden rounded-full border border-bd-border bg-white shadow-sm"
+                    style={{ left: hasSelectedSwiggyAnalysis ? 12 : 2 }}
+                  >
+                    <img src="/assets/Zomato_logo.png" alt="Zomato" className="h-full w-full object-contain" />
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <div className="rounded-lg border border-bd-border bg-bd-section px-3 py-2.5">
+            <p className="overline text-[9px] text-bd-inkSoft">Gross Sales</p>
+            <p className="mt-0.5 font-display text-lg font-black text-bd-tealDeep">
+              ₹ {formatCompactAmount(overallSales.grossSales)}
+            </p>
+          </div>
+          <div className="rounded-lg border border-bd-border bg-bd-section px-3 py-2.5">
+            <p className="overline text-[9px] text-bd-inkSoft">Deductions</p>
+            <p className="mt-0.5 font-display text-lg font-black text-bd-tealDeep">
+              ₹ {formatCompactAmount(overallSales.netDeductions)}
+            </p>
+          </div>
+          <div className="rounded-lg border border-bd-mint bg-bd-mint px-3 py-2.5">
+            <p className="overline text-[9px] text-bd-tealDeep/70">Net Payout</p>
+            <p className="mt-0.5 font-display text-lg font-black text-bd-tealDeep">
+              ₹ {formatCompactAmount(overallSales.netPayable)}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div className="mx-auto flex w-full max-w-2xl flex-wrap items-center justify-center gap-4 animate-in fade-in duration-200">
+        <button
+          type="button"
+          onClick={() => { setAggregator("swiggy"); setIsCompareMode(false); }}
+          className={`flex h-12 min-w-40 items-center justify-center gap-2.5 rounded-full border px-4 text-xs font-bold transition duration-200 ${aggregator === "swiggy" && !isCompareMode
+              ? "border-bd-tealDeep bg-bd-tealDeep text-white shadow-sm"
+              : "border-bd-border bg-white text-bd-tealDeep hover:border-bd-teal"
+            }`}
+          aria-label="Show Swiggy analytics"
+        >
+          <span className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-white">
+            <img src="/assets/Swiggy_logo.png" alt="" className="h-[82%] w-[82%] object-contain" />
+          </span>
+          Swiggy
+        </button>
+        <button
+          type="button"
+          onClick={() => { setAggregator("zomato"); setIsCompareMode(false); }}
+          className={`flex h-12 min-w-40 items-center justify-center gap-2.5 rounded-full border px-4 text-xs font-bold transition duration-200 ${aggregator === "zomato" && !isCompareMode
+              ? "border-bd-tealDeep bg-bd-tealDeep text-white shadow-sm"
+              : "border-bd-border bg-white text-bd-tealDeep hover:border-bd-teal"
+            }`}
+          aria-label="Show Zomato analytics"
+        >
+          <span className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-white">
+            <img src="/assets/Zomato_logo.png" alt="" className="h-full w-full object-contain" />
+          </span>
+          Zomato
+        </button>
+        <button
+          type="button"
+          onClick={() => setIsCompareMode((prev) => !prev)}
+          className={`flex h-12 min-w-40 items-center justify-center rounded-full border px-4 text-xs font-bold transition duration-200 ${isCompareMode
+            ? "border-bd-tealDeep bg-bd-tealDeep text-white shadow-sm"
+            : "border-bd-border bg-white text-bd-tealDeep hover:border-bd-teal"
+          }`}
+          aria-label="Compare Zomato and Swiggy analytics"
+        >
+          Compare
+        </button>
+      </div>
+
+      {!isCompareMode && (
+        <ProfitLossIndicator reference={selectedMonthReference} aggregator={aggregator} />
+      )}
+
+      {detailsLoading && (
+        <div className="flex h-20 items-center justify-center">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
+        </div>
+      )}
+
+      {isCompareMode && selectedMonthReference?.compare && (
+        <div className="space-y-4">
+          <CompareGrossSaleCard data={selectedMonthReference} />
+          <CompareTable
+            aggregator={null}
+            reference={selectedMonthReference}
+            monthwiseReferenceReports={monthwiseRef}
+          />
+        </div>
+      )}
+
+      {!detailsLoading && !isCompareMode && (numberOfOrders || grossSales || commissionableValue || netDeductions || netAdditions || netPayout) && (
+        <div className="space-y-5">
+          {numberOfOrders && (
+            <ExpandableTiles
+              title="Total Number of Orders"
+              totalAmount={String(numberOfOrders.value ?? 0)}
+              data={getNumberOfOrdersData(numberOfOrders)}
+              showRupeeIcon={false}
+            />
+          )}
+
+          {grossSales && (
+            <ExpandableTiles
+              title="Gross Sales"
+              totalAmount={String(grossSales.value ?? 0)}
+              data={getGrossSalesData(grossSales)}
+              showRupeeIcon={true}
+              showPieChart={true}
+            />
+          )}
+
+          {commissionableValue && (
+            <ExpandableTiles
+              title="Commissionable Value"
+              totalAmount={String(commissionableValue.value ?? 0)}
+              data={getCommissionableValueData(commissionableValue)}
+              showRupeeIcon={true}
+              showPieChart={true}
+              pieColors={commissionablePieColors}
+              noNeedtoShowDots={true}
+            />
+          )}
+
+          {netDeductions && (
+            <ExpandableTiles
+              title="Net Deductions"
+              totalAmount={String(netDeductions.value ?? 0)}
+              data={getNetDeductionsData(netDeductions, aggregator === "swiggy" ? "Swiggy" : "Zomato")}
+              showRupeeIcon={true}
+              showPieChart={true}
+            />
+          )}
+
+          {netAdditions && (
+            <ExpandableTiles
+              title="Net Additions"
+              totalAmount={String(netAdditions.value ?? 0)}
+              data={getNetAdditionsData(netAdditions)}
+              showRupeeIcon={true}
+              showPieChart={true}
+            />
+          )}
+
+          {netPayout && (
+            <ExpandableTiles
+              title="Net Payout"
+              totalAmount={String(netPayout.value ?? 0)}
+              data={getNetPayoutData(netPayout)}
+              showRupeeIcon={true}
+              showPieChart={true}
+            />
+          )}
+
+          <CompareTable
+            aggregator={aggregator}
+            reference={selectedMonthReference}
+            monthwiseReferenceReports={monthwiseRef}
+          />
+        </div>
+      )}
+
     </div>
   );
 }
@@ -238,7 +1858,7 @@ function Grow() {
         }
       })
       .catch((err) => {
-        console.error("Error fetching services:", err);
+        console.error("Error fetching services:", getApiErrorMessage(err, "Failed to fetch services."));
       })
       .finally(() => {
         if (activeRequest) {
@@ -268,10 +1888,8 @@ function Grow() {
         setToast({ message: "Failed to submit enquiry.", type: "error" });
       }
     } catch (err) {
-      console.error(err);
-      const axiosError = err as { response?: { data?: { error?: string; message?: string } } };
-      const errMsg = axiosError.response?.data?.error || axiosError.response?.data?.message || "Failed to submit enquiry. Please try again.";
-      setToast({ message: errMsg, type: "error" });
+      console.error("Failed to submit enquiry:", getApiErrorMessage(err, "Failed to submit enquiry. Please try again."));
+      setToast({ message: getApiErrorMessage(err, "Failed to submit enquiry. Please try again."), type: "error" });
     } finally {
       setEnquirySubmitting(false);
     }
@@ -431,11 +2049,10 @@ function Grow() {
                     return (
                       <label
                         key={service.id}
-                        className={`flex items-center gap-3 p-3.5 rounded-2xl border cursor-pointer select-none transition duration-200 ${
-                          isSelected
+                        className={`flex items-center gap-3 p-3.5 rounded-2xl border cursor-pointer select-none transition duration-200 ${isSelected
                             ? "bg-bd-mint/15 border-bd-teal text-bd-tealDeep font-bold"
                             : "bg-white/40 border-neutral-200/60 hover:bg-white/60 text-bd-inkSoft hover:text-neutral-900"
-                        }`}
+                          }`}
                       >
                         <input
                           type="checkbox"
@@ -521,7 +2138,36 @@ function Reports() {
   const [r, setR] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const [period, setPeriod] = useState("last_30_days");
-  const gen = async () => { setBusy(true); try { const { data } = await api.post("/premium/reports/generate", { period }); setR(data.report); } finally { setBusy(false); } };
+  const gen = async () => {
+    setBusy(true);
+    try {
+      const periodMultiplier = period === "last_7_days" ? 0.28 : period === "last_90_days" ? 2.8 : 1;
+      const grossSales = Math.round(186000 * periodMultiplier);
+      const deductions = Math.round(grossSales * 0.34);
+      const netPayout = grossSales - deductions;
+      const orders = Math.max(1, Math.round(1240 * periodMultiplier));
+      setR({
+        summary: {
+          gross_sales: grossSales,
+          net_payout: netPayout,
+          deductions,
+          orders,
+          avg_order_value: Math.round(grossSales / orders),
+          profit_margin_pct: Number(((netPayout / grossSales) * 100).toFixed(1)),
+        },
+        top_items: [
+          { name: "Chicken Biriyani", orders: Math.round(310 * periodMultiplier), revenue: Math.round(55800 * periodMultiplier) },
+          { name: "Al Faham", orders: Math.round(220 * periodMultiplier), revenue: Math.round(48400 * periodMultiplier) },
+          { name: "Porotta Combo", orders: Math.round(180 * periodMultiplier), revenue: Math.round(21600 * periodMultiplier) },
+        ],
+        recommendations: [
+          "Review platform ads weekly and pause campaigns below target ROAS.",
+          "Keep high-volume combos visible during dinner peak hours.",
+          "Compare net payout against ingredient cost before increasing discounts.",
+        ],
+      });
+    } finally { setBusy(false); }
+  };
   return (
     <div data-testid="reports">
       <div className="flex flex-wrap items-center gap-3">
@@ -582,11 +2228,11 @@ function ProfileSection() {
   // Initials for avatar
   const initials = user.name
     ? user.name
-        .split(" ")
-        .map((n) => n[0])
-        .join("")
-        .toUpperCase()
-        .slice(0, 2)
+      .split(" ")
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2)
     : "U";
 
   return (
@@ -601,7 +2247,7 @@ function ProfileSection() {
           </div>
         </div>
         <div>
-          <button 
+          <button
             onClick={() => {
               setEditName(user.name || "");
               setEditEmail(user.email || "");
@@ -618,7 +2264,7 @@ function ProfileSection() {
         {/* Contact Information */}
         <div className="rounded-2xl border border-bd-border bg-bd-section p-6 space-y-4 shadow-sm">
           <h3 className="font-display text-lg font-extrabold text-bd-tealDeep mb-1">Contact Information</h3>
-          
+
           <div className="space-y-3.5">
             <div>
               <p className="overline text-[10px] tracking-wider text-bd-inkSoft">Full Name</p>
@@ -650,7 +2296,7 @@ function ProfileSection() {
               </Link>
             )}
           </div>
-          
+
           {user.restaurants && user.restaurants.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {user.restaurants.map((rest) => (
@@ -685,11 +2331,11 @@ function ProfileSection() {
               <h3 className="font-display text-lg font-bold text-bd-tealDeep">Edit Profile</h3>
               <p className="text-xs text-bd-inkSoft">Update your name and email address.</p>
             </div>
-            
+
             <div className="space-y-3.5">
               <label className="block">
                 <span className="overline text-[10px] text-bd-inkSoft mb-1.5 block">Full Name</span>
-                <input 
+                <input
                   type="text"
                   required
                   value={editName}
@@ -700,7 +2346,7 @@ function ProfileSection() {
 
               <label className="block">
                 <span className="overline text-[10px] text-bd-inkSoft mb-1.5 block">Email Address</span>
-                <input 
+                <input
                   type="email"
                   required
                   value={editEmail}
@@ -711,14 +2357,14 @@ function ProfileSection() {
             </div>
 
             <div className="flex gap-3 pt-2">
-              <button 
+              <button
                 type="button"
                 onClick={() => setShowEditProfile(false)}
                 className="flex-1 rounded-full border border-neutral-200 py-2.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50 transition"
               >
                 Cancel
               </button>
-              <button 
+              <button
                 type="button"
                 onClick={() => {
                   if (editName.trim() && editEmail.trim()) {
@@ -891,7 +2537,7 @@ const TOOLS = [
   { key: "menu", title: "Menu Price Calculator", desc: "Cost + overhead + margin → suggested price.", icon: Calculator, C: MenuPriceCalc },
   { key: "food", title: "Food Cost Calculator", desc: "Coming soon.", icon: Receipt, C: () => null, locked: true },
   { key: "recipe", title: "Recipe Management", desc: "Save recipes with auto-priced suggestions.", icon: ChefHat, C: RecipeMgmt },
-  { key: "soa", title: "Online SOA Decoder", desc: "Upload SOA, see net payout + hidden charges.", icon: FileText, C: SoaDecoder },
+  { key: "soa", title: "Financial Analytics", desc: "Latest Analytics", icon: FileText, C: SoaAnalyser },
   { key: "appt", title: "Book Appointment", desc: "Schedule a session with a BizzDeck expert.", icon: CalendarCheck2, C: () => null },
   { key: "grow", title: "Grow Your Business", desc: "Curated, high-impact tactics for restaurants.", icon: TrendingUp, C: Grow },
   { key: "report", title: "Business Report", desc: "Generate a board-ready performance report.", icon: FileBarChart2, C: Reports },
@@ -902,6 +2548,9 @@ export default function DashboardPage() {
   const router = useRouter();
   const { user, loading, logout } = useAuth();
   const [active, setActive] = useState("menu");
+  const [latestAnalyticsLabel, setLatestAnalyticsLabel] = useState("Latest Analytics");
+  const [soaMonthOptions, setSoaMonthOptions] = useState<SoaMonthOption[]>([]);
+  const [soaSelectedAnalysisId, setSoaSelectedAnalysisId] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [selectedRest, setSelectedRest] = useState<Restaurant | null>(() => {
     if (typeof window !== "undefined") {
@@ -920,6 +2569,7 @@ export default function DashboardPage() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
 
   const restaurantList = useMemo(() => {
     return user?.restaurants || [];
@@ -958,25 +2608,38 @@ export default function DashboardPage() {
       return;
     }
 
+    setSelectedRestPlan(selectedRest.plan || null);
+    setSelectedRestMeetingLink(selectedRest.meetingLink || null);
+
+    if (selectedRest.plan && selectedRest.meetingLink !== undefined) {
+      return;
+    }
+
     let activeRequest = true;
 
-    axios.get(`/v1/restaurants/${selectedRest.id}`)
+    axios.get(`/v1/restaurants/${selectedRest.id}`, { timeout: 6000 })
       .then((res) => {
         if (activeRequest && res.data?.success && res.data?.data) {
-          const plan = res.data.data.plan;
-          const meetingLink = res.data.data.meetingLink;
+          const plan = res.data.data.plan || null;
+          const meetingLink = res.data.data.meetingLink || null;
           setSelectedRestPlan(plan);
           setSelectedRestMeetingLink(meetingLink);
+          setSelectedRest((current) => {
+            if (!current || current.id !== selectedRest.id) return current;
+            const next = { ...current, plan: plan || undefined, meetingLink: meetingLink || undefined };
+            localStorage.setItem("selected_restaurant", JSON.stringify(next));
+            return next;
+          });
         }
       })
       .catch((err) => {
-        console.error("Error fetching restaurant details:", err);
+        console.error("Error fetching restaurant details:", getApiErrorMessage(err, "Failed to fetch restaurant details."));
       });
 
     return () => {
       activeRequest = false;
     };
-  }, [loading, user, selectedRest?.id]);
+  }, [loading, user, selectedRest?.id, selectedRest?.plan, selectedRest?.meetingLink]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -1013,13 +2676,14 @@ export default function DashboardPage() {
 
   const Active = TOOLS.find(t => t.key === active)!;
   const ActiveC = Active.C;
+  const activeDescription = active === "soa" ? latestAnalyticsLabel : Active.desc;
   return (
     <div className="min-h-screen bg-bd-bg" data-testid="dashboard">
       <header className="sticky top-0 z-40 bd-glass border-b border-white/10">
         <div className="w-full flex items-center justify-between px-6 lg:px-8 py-3">
           <div className="flex items-center gap-4">
             <Link href="/" className="flex items-center"><img src="/assets/White@4x.png" alt="BizzDeck Logo" className="h-8 object-contain" /></Link>
-            
+
             {restaurantList && (
               restaurantList.length === 0 ? (
                 <Link
@@ -1046,11 +2710,10 @@ export default function DashboardPage() {
                           <button
                             key={r.id}
                             onClick={() => handleSelectRestaurant(r)}
-                            className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs transition ${
-                              selectedRest?.id === r.id
+                            className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs transition ${selectedRest?.id === r.id
                                 ? "bg-bd-mint text-bd-tealDeep font-bold"
                                 : "text-white/80 hover:bg-white/5 hover:text-white"
-                            }`}
+                              }`}
                           >
                             <Store size={12} />
                             <div className="truncate">
@@ -1087,18 +2750,16 @@ export default function DashboardPage() {
 
       <div className="w-full flex px-6 lg:px-8 py-8 gap-6 items-start">
         {/* Collapsible Left Sidebar (Modern & Minimal Card Panel) */}
-        <aside 
-          className={`flex flex-col gap-1.5 shrink-0 border border-bd-border bg-bd-section rounded-3xl p-4 shadow-sm transition-all duration-300 ease-in-out ${
-            sidebarCollapsed ? "w-[80px]" : "w-[240px] sm:w-[280px]"
-          }`}
+        <aside
+          className={`flex flex-col gap-1.5 shrink-0 border border-bd-border bg-bd-section rounded-3xl p-4 shadow-sm transition-all duration-300 ease-in-out ${sidebarCollapsed ? "w-[80px]" : "w-[240px] sm:w-[280px]"
+            }`}
         >
           <div className="flex items-center justify-between mb-5 border-b border-neutral-100/60 pb-3.5 px-1">
             {!sidebarCollapsed && <span className="text-xs font-bold uppercase tracking-wider text-bd-inkSoft">Menus</span>}
-            <button 
+            <button
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className={`p-2 rounded-xl bg-white border border-neutral-200/80 text-neutral-500 hover:text-neutral-950 shadow-sm hover:shadow transition duration-200 ${
-                sidebarCollapsed ? "mx-auto" : ""
-              }`}
+              className={`p-2 rounded-xl bg-white border border-neutral-200/80 text-neutral-500 hover:text-neutral-950 shadow-sm hover:shadow transition duration-200 ${sidebarCollapsed ? "mx-auto" : ""
+                }`}
               title={sidebarCollapsed ? "Expand Tools" : "Collapse Tools"}
             >
               {sidebarCollapsed ? <ChevronRight size={18} className="stroke-[2.5]" /> : <ChevronLeft size={18} className="stroke-[2.5]" />}
@@ -1110,12 +2771,12 @@ export default function DashboardPage() {
               const Icon = t.icon;
               const on = t.key === active;
               const isRestaurantPlanFree = selectedRestPlan === "free";
-              const isLocked = t.locked || 
+              const isLocked = t.locked ||
                 (isNoRestaurant && t.key !== "tickets" && t.key !== "profile") ||
                 (isRestaurantPlanFree && t.key !== "tickets" && t.key !== "profile");
               return (
-                <button 
-                  key={t.key} 
+                <button
+                  key={t.key}
                   disabled={isLocked}
                   onClick={() => {
                     if (!isLocked) {
@@ -1130,25 +2791,22 @@ export default function DashboardPage() {
                       }
                     }
                   }}
-                  data-testid={`tool-${t.key}`} 
-                  className={`relative group flex items-center rounded-xl py-3 transition w-full text-[14px] ${
-                    sidebarCollapsed ? "justify-center px-0" : "px-3.5 text-left"
-                  } ${
-                    isLocked
+                  data-testid={`tool-${t.key}`}
+                  className={`relative group flex items-center rounded-xl py-3 transition w-full text-[14px] ${sidebarCollapsed ? "justify-center px-0" : "px-3.5 text-left"
+                    } ${isLocked
                       ? "opacity-50 cursor-not-allowed text-neutral-400"
-                      : on 
-                        ? "bg-white text-bd-tealDeep font-semibold shadow-sm border border-neutral-200/20" 
+                      : on
+                        ? "bg-white text-bd-tealDeep font-semibold shadow-sm border border-neutral-200/20"
                         : "text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50"
-                  }`}
+                    }`}
                   title={sidebarCollapsed ? t.title : undefined}
                 >
-                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center transition-colors ${
-                    isLocked 
-                      ? "text-neutral-400" 
-                      : on 
-                        ? "text-bd-tealDeep" 
+                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center transition-colors ${isLocked
+                      ? "text-neutral-400"
+                      : on
+                        ? "text-bd-tealDeep"
                         : "text-neutral-400 group-hover:text-neutral-700"
-                  }`}>
+                    }`}>
                     {isLocked ? <Lock size={16} /> : <Icon size={19} />}
                   </span>
                   {!sidebarCollapsed && (
@@ -1176,7 +2834,7 @@ export default function DashboardPage() {
           <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
               <h1 className="font-display text-3xl font-bold tracking-tight text-bd-tealDeep sm:text-4xl">{Active.title}</h1>
-              <p className="mt-1 text-sm text-bd-inkSoft">{Active.desc}</p>
+              <p className="mt-1 text-sm text-bd-inkSoft">{activeDescription}</p>
             </div>
             {active === "grow" && (
               <button
@@ -1188,8 +2846,39 @@ export default function DashboardPage() {
                 Send Enquiry
               </button>
             )}
+            {active === "soa" && soaMonthOptions.length > 0 && (
+              <div className="w-full sm:w-72">
+                <label htmlFor="soa-month-select" className="block text-xs font-bold text-bd-tealDeep uppercase tracking-wider mb-2">
+                  Select Statement Month
+                </label>
+                <div className="relative">
+                  <select
+                    id="soa-month-select"
+                    data-testid="soa-month-select"
+                    value={soaSelectedAnalysisId}
+                    onChange={(e) => setSoaSelectedAnalysisId(e.target.value)}
+                    className="w-full appearance-none rounded-xl border border-bd-border bg-white pl-4 pr-10 py-2.5 text-sm font-semibold text-bd-tealDeep outline-none focus:border-bd-teal focus:ring-1 focus:ring-bd-teal transition duration-200"
+                  >
+                    {soaMonthOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-bd-inkSoft">
+                    <ChevronDown size={16} />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          <ActiveC />
+          <ActiveC
+            selectedRestaurant={selectedRest}
+            onLatestAnalyticsLabel={setLatestAnalyticsLabel}
+            selectedAnalysisId={active === "soa" ? soaSelectedAnalysisId : undefined}
+            onSelectedAnalysisIdChange={active === "soa" ? setSoaSelectedAnalysisId : undefined}
+            onMonthOptionsChange={active === "soa" ? setSoaMonthOptions : undefined}
+          />
         </main>
       </div>
 
@@ -1206,13 +2895,13 @@ export default function DashboardPage() {
               </p>
             </div>
             <div className="flex gap-3 pt-2">
-              <button 
+              <button
                 onClick={() => setShowSignOutConfirm(false)}
                 className="flex-1 rounded-full border border-neutral-200 py-2.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50 transition"
               >
                 Cancel
               </button>
-              <button 
+              <button
                 onClick={async () => {
                   setShowSignOutConfirm(false);
                   await logout();

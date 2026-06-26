@@ -25,6 +25,14 @@ body {
   font-feature-settings: "ss01", "cv11";
 }
 
+.mobile-restriction {
+  display: none;
+}
+
+.desktop-app-shell {
+  min-width: 768px;
+}
+
 ::selection { background: hsl(var(--bd-mint)); color: hsl(var(--bd-teal-deep)); }
 
 .font-display { font-family: var(--font-body), system-ui, sans-serif; letter-spacing: -0.022em; }
@@ -96,4 +104,63 @@ body {
 /* Respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .animate-marquee, .animate-pulse-ring { animation: none !important; }
+}
+
+@media (max-width: 767px) {
+  html,
+  body {
+    min-height: 100%;
+    overflow: hidden;
+  }
+
+  .desktop-app-shell {
+    display: none !important;
+  }
+
+  .mobile-restriction {
+    display: flex;
+    min-height: 100svh;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(circle at 50% 0%, hsl(var(--bd-mint) / 0.28), transparent 34%),
+      hsl(var(--bd-teal-deep));
+    color: white;
+  }
+
+  .mobile-restriction__panel {
+    width: min(100%, 360px);
+    text-align: center;
+  }
+
+  .mobile-restriction__logo {
+    margin: 0 auto 24px;
+    height: 48px;
+    width: auto;
+    border-radius: 10px;
+  }
+
+  .mobile-restriction__eyebrow {
+    margin-bottom: 8px;
+    color: hsl(var(--bd-mint));
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .mobile-restriction__panel h1 {
+    margin: 0;
+    font-size: 1.55rem;
+    font-weight: 800;
+    line-height: 1.12;
+  }
+
+  .mobile-restriction__panel p:last-child {
+    margin: 14px 0 0;
+    color: rgba(255,255,255,0.72);
+    font-size: 0.95rem;
+    line-height: 1.55;
+  }
 }

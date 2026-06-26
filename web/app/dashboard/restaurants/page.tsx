@@ -9,6 +9,7 @@ import axios from "axios";
 import { Store, MapPin, Edit3, Trash2, ArrowLeft, AlertTriangle } from "lucide-react";
 import { useAuth, Restaurant } from "@/components/auth/AuthProvider";
 import { Toast } from "@/components/ui/Toast";
+import { getApiErrorMessage } from "@/lib/api";
 
 export default function ManageRestaurantsPage() {
   const router = useRouter();
@@ -36,9 +37,7 @@ export default function ManageRestaurantsPage() {
       }
     } catch (err: unknown) {
       console.error(err);
-      const axiosError = err as { response?: { data?: { error?: string; message?: string } } };
-      const errMsg = axiosError.response?.data?.error || axiosError.response?.data?.message || "Failed to load restaurants. Please try again.";
-      setError(errMsg);
+      setError(getApiErrorMessage(err, "Failed to load restaurants. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -97,9 +96,7 @@ export default function ManageRestaurantsPage() {
       }
     } catch (err: unknown) {
       console.error(err);
-      const axiosError = err as { response?: { data?: { error?: string; message?: string } } };
-      const errMsg = axiosError.response?.data?.error || axiosError.response?.data?.message || "Failed to delete restaurant. Please try again.";
-      setToast({ message: errMsg, type: "error" });
+      setToast({ message: getApiErrorMessage(err, "Failed to delete restaurant. Please try again."), type: "error" });
     } finally {
       setDeleting(false);
     }

@@ -11,6 +11,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { TextField } from "@/components/ui/TextField";
 import { Toast } from "@/components/ui/Toast";
+import { getApiErrorMessage } from "@/lib/api";
 
 function AddRestaurantForm() {
   const router = useRouter();
@@ -59,9 +60,7 @@ function AddRestaurantForm() {
       }
     } catch (err: unknown) {
       console.error(err);
-      const errorObj = err as { response?: { data?: { message?: string } }; message?: string };
-      const errMsg = errorObj.response?.data?.message || errorObj.message || "Failed to fetch locations for this pincode";
-      setToast({ message: errMsg, type: "error" });
+      setToast({ message: getApiErrorMessage(err, "Failed to fetch locations for this pincode"), type: "error" });
       setLocalitiesList([]);
       setZonesList([]);
       setState("");
@@ -133,9 +132,9 @@ function AddRestaurantForm() {
           setSwiggyCommission(d.expectedCommissionPercentageSwiggy?.toString() || "");
           setZomatoCommission(d.expectedCommissionPercentageZomato?.toString() || "");
         }
-      } catch (err) {
-        console.error("Error loading restaurant details:", err);
-        setToast({ message: "Failed to load restaurant details.", type: "error" });
+    } catch (err) {
+      console.error("Error loading restaurant details:", err);
+      setToast({ message: getApiErrorMessage(err, "Failed to load restaurant details."), type: "error" });
       } finally {
         setFetchingDetails(false);
       }
@@ -316,9 +315,10 @@ function AddRestaurantForm() {
       }
     } catch (err) {
       console.error(err);
-      const errorObj = err as { response?: { data?: { message?: string } }; message?: string };
-      const errMsg = errorObj.response?.data?.message || errorObj.message || (isEditMode ? "Failed to update restaurant" : "Failed to create restaurant");
-      setToast({ message: errMsg, type: "error" });
+      setToast({
+        message: getApiErrorMessage(err, isEditMode ? "Failed to update restaurant" : "Failed to create restaurant"),
+        type: "error",
+      });
       setSubmitting(false);
     }
   };

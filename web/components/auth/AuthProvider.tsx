@@ -3,11 +3,28 @@
 import * as React from "react";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import axios, { InternalAxiosRequestConfig, AxiosResponse, AxiosError } from "axios";
-import { api } from "@/lib/api";
+import { getApiErrorMessage } from "@/lib/api";
 import { AuthModal } from "./AuthModal";
 
+declare global {
+  interface Window {
+    initSendOTP?: (configuration: Msg91Config) => void;
+    sendOtp?: (identifier: string, success: (data: unknown) => void, failure: (error: unknown) => void) => void;
+    verifyOtp?: (otp: string, success: (data: unknown) => void, failure: (error: unknown) => void) => void;
+    __bizzdeckMsg91ErrorHandlersInstalled?: boolean;
+  }
+}
+
+const runtimeState = globalThis as typeof globalThis & {
+  __bizzdeckAxiosInterceptors?: {
+    request: number;
+    response: number;
+  };
+};
+
 // Suppress unhandled third-party script rejections (e.g. MSG91 OTP Axios errors) from crashing the dev layout
-if (typeof window !== "undefined") {
+if (typeof window !== "undefined" && !window.__bizzdeckMsg91ErrorHandlersInstalled) {
+  window.__bizzdeckMsg91ErrorHandlersInstalled = true;
   const isMsg91Error = (error: unknown): boolean => {
     if (!error || typeof error !== "object") return false;
     const err = error as {
@@ -53,84 +70,76 @@ if (typeof window !== "undefined") {
   }, { capture: true });
 }
 
-// Interceptor to automatically attach Bearer token to /v1/ requests
-axios.interceptors.request.use(
-  (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-    if (token && config.url?.startsWith("/v1/") && !config.headers.Authorization) {
-      config.headers.Authorization = `Bearer ${token}`;
+if (!runtimeState.__bizzdeckAxiosInterceptors) {
+  // Interceptor to automatically attach Bearer token to /v1/ requests.
+  const request = axios.interceptors.request.use(
+    (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
+      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+      if (token && config.url?.startsWith("/v1/") && !config.headers.Authorization) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    },
+    (error: AxiosError): Promise<never> => {
+      return Promise.reject(error);
     }
-    return config;
-  },
-  (error: AxiosError): Promise<never> => {
-    return Promise.reject(error);
-  }
-);
+  );
 
-// Interceptor to handle expired access tokens
-axios.interceptors.response.use(
-  (response: AxiosResponse): AxiosResponse => response,
-  async (error: AxiosError): Promise<unknown> => {
-    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
-    
-    // Check if error is 401 Unauthorized, request has not been retried yet, and request is not a refresh call
-    if (
-      error.response?.status === 401 &&
-      originalRequest &&
-      !originalRequest._retry &&
-      !originalRequest.url?.includes("/v1/users/refresh")
-    ) {
-      originalRequest._retry = true;
-      
-      const refreshToken = typeof window !== "undefined" ? localStorage.getItem("refreshToken") : null;
-      if (refreshToken) {
-        try {
-          // Perform refresh token POST
-          const response = await axios.post("/v1/users/refresh", { refreshToken }, {
-            headers: {
-              "Content-Type": "application/json"
-            }
-          });
-          
-          if (response.data && response.data.success && response.data.data) {
-            const newToken = response.data.data.token;
-            const newRefreshToken = response.data.data.refreshToken;
-            
-            if (typeof window !== "undefined") {
-              localStorage.setItem("token", newToken);
-              localStorage.setItem("refreshToken", newRefreshToken);
-              
-              const storedUser = localStorage.getItem("user");
-              if (storedUser) {
-                try {
-                  const userObj = JSON.parse(storedUser);
-                  localStorage.setItem("user", JSON.stringify(userObj));
-                } catch {
-                  // ignore
-                }
+  // Interceptor to handle expired access tokens.
+  const response = axios.interceptors.response.use(
+    (res: AxiosResponse): AxiosResponse => res,
+    async (error: AxiosError): Promise<unknown> => {
+      const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+
+      if (
+        error.response?.status === 401 &&
+        originalRequest &&
+        !originalRequest._retry &&
+        !originalRequest.url?.includes("/v1/users/refresh")
+      ) {
+        originalRequest._retry = true;
+
+        const refreshToken = typeof window !== "undefined" ? localStorage.getItem("refreshToken") : null;
+        if (refreshToken) {
+          try {
+            const refreshResponse = await axios.post("/v1/users/refresh", { refreshToken }, {
+              timeout: 6000,
+              headers: {
+                "Content-Type": "application/json",
+              },
+            });
+
+            if (refreshResponse.data && refreshResponse.data.success && refreshResponse.data.data) {
+              const newToken = refreshResponse.data.data.token;
+              const newRefreshToken = refreshResponse.data.data.refreshToken;
+
+              if (typeof window !== "undefined") {
+                localStorage.setItem("token", newToken);
+                localStorage.setItem("refreshToken", newRefreshToken);
+                logApiToken(newToken, "refresh");
               }
+
+              originalRequest.headers.Authorization = `Bearer ${newToken}`;
+              return axios(originalRequest);
             }
-            
-            // Update the Authorization header and retry the original request
-            originalRequest.headers.Authorization = `Bearer ${newToken}`;
-            return axios(originalRequest);
-          }
-        } catch (refreshError) {
-          console.error("Token refresh failed:", refreshError);
-          // If refresh fails, clean local session and refresh/reload to log out
-          if (typeof window !== "undefined") {
-            localStorage.removeItem("token");
-            localStorage.removeItem("refreshToken");
-            localStorage.removeItem("user");
-            window.location.reload();
+          } catch (refreshError) {
+            console.error("Token refresh failed:", getApiErrorMessage(refreshError, "Token refresh failed."));
+            if (typeof window !== "undefined") {
+              localStorage.removeItem("token");
+              localStorage.removeItem("refreshToken");
+              localStorage.removeItem("user");
+              window.location.assign("/");
+            }
           }
         }
       }
+
+      return Promise.reject(error);
     }
-    
-    return Promise.reject(error);
-  }
-);
+  );
+
+  runtimeState.__bizzdeckAxiosInterceptors = { request, response };
+}
 
 interface Msg91Config {
   widgetId: string;
@@ -141,13 +150,14 @@ interface Msg91Config {
   failure?: (error: unknown) => void;
 }
 
-declare global {
-  interface Window {
-    initSendOTP?: (configuration: Msg91Config) => void;
-    sendOtp?: (identifier: string, success: (data: unknown) => void, failure: (error: unknown) => void) => void;
-    verifyOtp?: (otp: string, success: (data: unknown) => void, failure: (error: unknown) => void) => void;
-  }
+function logApiToken(token: string | null | undefined, source: string) {
+  if (!token) return;
+  console.log(`[BizzDeck API Token][${source}]`, token);
 }
+
+const AUTH_REQUEST_TIMEOUT_MS = 6000;
+const OTP_SEND_TIMEOUT_MS = 8000;
+const OTP_VERIFY_TIMEOUT_MS = 8000;
 
 export type Restaurant = {
   id: number;
@@ -177,6 +187,7 @@ export type Restaurant = {
   swiggyCommission?: number;
   zomatoCommission?: number;
   plan?: string;
+  meetingLink?: string;
 };
 
 export interface ApiRestaurant {
@@ -220,9 +231,10 @@ export interface ApiRestaurant {
   expectedCommissionPercentageZomato?: number;
   gstNumber?: string;
   plan?: string;
+  meetingLink?: string;
 }
 
-export function mapResponseToRestaurant(apiData: ApiRestaurant): Restaurant {
+function mapResponseToRestaurant(apiData: ApiRestaurant): Restaurant {
   if (!apiData) return {} as Restaurant;
   return {
     id: apiData.id,
@@ -252,6 +264,7 @@ export function mapResponseToRestaurant(apiData: ApiRestaurant): Restaurant {
     swiggyCommission: apiData.expectedCommissionPercentageSwiggy,
     zomatoCommission: apiData.expectedCommissionPercentageZomato,
     plan: apiData.plan,
+    meetingLink: apiData.meetingLink,
   };
 }
 
@@ -289,25 +302,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<"login" | "register">("login");
-
-  // Mount effect to restore session from local storage on client load
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const storedToken = localStorage.getItem("token");
-      const storedUser = localStorage.getItem("user");
-      if (storedToken && storedUser) {
-        try {
-          api.defaults.headers.common["Authorization"] = `Bearer ${storedToken}`;
-          setUser(JSON.parse(storedUser));
-        } catch (e) {
-          console.error("Failed to parse user from localStorage:", e);
-        }
-      }
-    }
-    setLoading(false);
-  }, []);
-
-
 
   // Inject MSG91 widget configuration and scripts
   useEffect(() => {
@@ -365,40 +359,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsAuthModalOpen(false);
   }, []);
 
-  const logout = async () => {
-    try {
-      await api.post("/auth/logout");
-    } catch {
-      // ignore
-    }
+  const logout = useCallback(async () => {
     if (typeof window !== "undefined") {
       localStorage.removeItem("token");
       localStorage.removeItem("refreshToken");
       localStorage.removeItem("user");
     }
-    delete api.defaults.headers.common["Authorization"];
+    delete axios.defaults.headers.common["Authorization"];
     setUser(null);
-  };
+  }, []);
 
   const fetchMe = useCallback(async () => {
-    if (typeof window !== "undefined" && !localStorage.getItem("token")) {
+    if (typeof window === "undefined") {
       setLoading(false);
       return;
     }
+
+    const token = localStorage.getItem("token");
+    const storedUser = localStorage.getItem("user");
+
+    if (!token || !storedUser) {
+      setLoading(false);
+      return;
+    }
+
+    let localUser: User;
     try {
-      const { data } = await api.get("/auth/me");
-      if (!data || !data.user) {
-        setUser(null);
-        setLoading(false);
-        return;
-      }
-      const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+      localUser = JSON.parse(storedUser) as User;
+    } catch (err) {
+      console.warn("Failed to parse stored user session:", err);
+      localStorage.removeItem("token");
+      localStorage.removeItem("refreshToken");
+      localStorage.removeItem("user");
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+
+    logApiToken(token, "localStorage");
+    axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+    setUser(localUser);
+    setLoading(false);
+
+    try {
       let profileData = null;
-      if (token && data.user.id !== "demo-id") {
+      if (localUser.id !== "demo-id") {
         try {
           const profileRes = await axios.request({
             method: "GET",
-            url: `/v1/users/${data.user.id}`,
+            url: `/v1/users/${localUser.id}`,
+            timeout: AUTH_REQUEST_TIMEOUT_MS,
             params: {
               restaurant_info: "false",
               sales_info: "false",
@@ -407,27 +417,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               Authorization: `Bearer ${token}`,
             },
           });
-          console.log(profileRes.data);
           if (profileRes.data && profileRes.data.success) {
             profileData = profileRes.data.data;
           }
         } catch (profileErr) {
-          console.warn("Failed to fetch user profile details:", profileErr);
+          console.warn("Profile restore skipped:", getApiErrorMessage(profileErr, "Profile request timed out."));
         }
       }
 
       let localRests: Restaurant[] = [];
-      if (typeof window !== "undefined") {
-        try {
-          const stored = localStorage.getItem(`local_restaurants_${data.user.id}`);
-          if (stored) {
-            localRests = JSON.parse(stored);
-          }
-        } catch {
-          // ignore
+      try {
+        const stored = localStorage.getItem(`local_restaurants_${localUser.id}`);
+        if (stored) {
+          localRests = JSON.parse(stored);
         }
+      } catch {
+        // ignore
       }
-      const apiRests = profileData?.restaurants || data.user.restaurants || [];
+      const apiRests = profileData?.restaurants || localUser.restaurants || [];
       const normalizedApiRests = apiRests.map((r: ApiRestaurant) => mapResponseToRestaurant(r));
       const mergedRests = [...normalizedApiRests];
       localRests.forEach((lr) => {
@@ -437,82 +444,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       const updatedUser: User = {
-        ...data.user,
+        ...localUser,
+        ...profileData,
         restaurants: mergedRests,
-        phone: profileData?.phone || profileData?.phoneNumber || data.user.phone || data.user.phoneNumber,
+        phone: profileData?.phone || profileData?.phoneNumber || localUser.phone,
       };
 
       setUser(updatedUser);
-      if (typeof window !== "undefined") {
-        localStorage.setItem("user", JSON.stringify(updatedUser));
-      }
+      localStorage.setItem("user", JSON.stringify(updatedUser));
     } catch (err) {
-      console.warn("Failed to fetch current user session:", err);
+      console.warn("Failed to restore current user session:", getApiErrorMessage(err, "Session restore failed."));
       const errorObj = err as { response?: { status?: number } } | null;
-      if (errorObj?.response?.status === 401 || errorObj?.response?.status === 403) {
+      if (errorObj?.response?.status === 401 || errorObj?.response?.status === 403 || errorObj?.response?.status === 404) {
         logout();
       }
-    } finally {
-      setLoading(false);
     }
-  }, []);
+  }, [logout]);
 
   useEffect(() => {
     fetchMe();
   }, [fetchMe]);
 
   const login = async (email: string, password: string) => {
-    const { data } = await api.post("/auth/login", { email, password });
-    let localRests: Restaurant[] = [];
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem(`local_restaurants_${data.user.id}`);
-        if (stored) {
-          localRests = JSON.parse(stored);
-        }
-      } catch {}
-    }
-    const apiRests = data.user.restaurants || [];
-    const normalizedApiRests = apiRests.map((r: ApiRestaurant) => mapResponseToRestaurant(r));
-    const mergedRests = [...normalizedApiRests];
-    localRests.forEach((lr) => {
-      if (!mergedRests.some((r) => r.id === lr.id)) {
-        mergedRests.push(lr);
-      }
-    });
-    const updatedUser = { ...data.user, restaurants: mergedRests };
-    setUser(updatedUser);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("user", JSON.stringify(updatedUser));
-    }
-    return updatedUser as User;
+    void email;
+    void password;
+    throw new Error("Email login is not available. Please use phone OTP login.");
   };
 
   const register = async (name: string, email: string, password: string) => {
-    const { data } = await api.post("/auth/register", { name, email, password });
-    let localRests: Restaurant[] = [];
-    if (typeof window !== "undefined") {
-      try {
-        const stored = localStorage.getItem(`local_restaurants_${data.user.id}`);
-        if (stored) {
-          localRests = JSON.parse(stored);
-        }
-      } catch {}
-    }
-    const apiRests = data.user.restaurants || [];
-    const normalizedApiRests = apiRests.map((r: ApiRestaurant) => mapResponseToRestaurant(r));
-    const mergedRests = [...normalizedApiRests];
-    localRests.forEach((lr) => {
-      if (!mergedRests.some((r) => r.id === lr.id)) {
-        mergedRests.push(lr);
-      }
-    });
-    const updatedUser = { ...data.user, restaurants: mergedRests };
-    setUser(updatedUser);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("user", JSON.stringify(updatedUser));
-    }
-    return updatedUser as User;
+    void name;
+    void email;
+    void password;
+    throw new Error("Email registration is not available. Please use phone OTP login.");
   };
 
   const sendOtp = (phone: string): Promise<void> => {
@@ -523,28 +486,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       if (typeof window.sendOtp !== "function") {
         console.warn("MSG91 window.sendOtp is not available, falling back to mock mode.");
-        api.post("/auth/otp/send", { phone })
-          .then(() => resolve())
-          .catch((err: unknown) => {
-            console.warn("Backend mock OTP send failed, allowing mock bypass:", err);
-            resolve();
-          });
+        resolve();
         return;
       }
 
       // MSG91 expects the number in international format without leading +
       // The modal enforces 10-digit Indian numbers, so we prepend '91'
       const formattedPhone = `91${phone}`;
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        callback();
+      };
+      const timeoutId = window.setTimeout(() => {
+        finish(() => reject(new Error("OTP service is taking too long. Please try again.")));
+      }, OTP_SEND_TIMEOUT_MS);
+
       window.sendOtp(
         formattedPhone,
         (data: unknown) => {
           console.log("MSG91 sendOtp success:", data);
-          resolve();
+          finish(() => resolve());
         },
         (error: unknown) => {
           console.error("MSG91 sendOtp failure:", error);
           const errorObj = error as { message?: string } | null;
-          reject(new Error(errorObj?.message || "Failed to send OTP via MSG91. Please check the number and try again."));
+          finish(() => reject(new Error(errorObj?.message || "Failed to send OTP via MSG91. Please check the number and try again.")));
         }
       );
     });
@@ -580,10 +549,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        callback();
+      };
+      const timeoutId = window.setTimeout(() => {
+        finish(() => reject(new Error("OTP verification is taking too long. Please try again.")));
+      }, OTP_VERIFY_TIMEOUT_MS);
+
       window.verifyOtp(
         otp,
         async (data: unknown) => {
-          console.log("MSG91 verifyOtp success:", data);
+          // Log MSG91 status without logging the actual raw verification token
+          console.log("MSG91 verifyOtp status: success");
           try {
             const dataObj = data as { message?: string } | null;
             const verifiedToken = dataObj?.message || data;
@@ -592,6 +573,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const options = {
               method: "POST",
               url: "/v1/users/signin",
+              timeout: OTP_VERIFY_TIMEOUT_MS,
               headers: {
                 "Content-Type": "application/json",
               },
@@ -613,39 +595,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               // Save response token to localStorage for persistent session
               if (typeof window !== "undefined") {
                 localStorage.setItem("token", token);
+                logApiToken(token, "signin");
                 if (refreshToken) {
                   localStorage.setItem("refreshToken", refreshToken);
                 }
               }
 
               // Set default Authorization header for api client
-              api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+              axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
 
-              // Fetch full user details (including restaurants list) from profile endpoint
-              let profileData = null;
-              if (uData.id !== "demo-id") {
-                try {
-                  const profileRes = await axios.request({
-                    method: "GET",
-                    url: `/v1/users/${uData.id}`,
-                    params: {
-                      restaurant_info: "false",
-                      sales_info: "false",
-                    },
-                    headers: {
-                      Authorization: `Bearer ${token}`,
-                    },
-                  });
-                  console.log(profileRes.data);
-                  if (profileRes.data && profileRes.data.success) {
-                    profileData = profileRes.data.data;
-                  }
-                } catch (profileErr) {
-                  console.warn("Failed to fetch user profile details:", profileErr);
-                }
-              }
-
-              // Map API user object to local User type expected by Next.js application
               let localRests: Restaurant[] = [];
               if (typeof window !== "undefined") {
                 try {
@@ -657,7 +615,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   // ignore
                 }
               }
-              const apiRests = profileData?.restaurants || uData.restaurants || [];
+              const apiRests = uData.restaurants || [];
               const normalizedApiRests = apiRests.map((r: ApiRestaurant) => mapResponseToRestaurant(r));
               const mergedRests = [...normalizedApiRests];
               localRests.forEach((lr) => {
@@ -669,12 +627,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               // Map API user object to local User type expected by Next.js application
               const loggedUser: User = {
                 id: String(uData.id),
-                email: profileData?.email || uData.email || `${profileData?.name || uData.name || "user"}`.toLowerCase().replace(/\s+/g, "") + "@bizzdeck.com",
-                name: profileData?.name || uData.name || "Restaurant Partner",
-                role: profileData?.role || uData.role || "customer",
-                plan: profileData?.plan || uData.plan || "pro",
+                email: uData.email || `${uData.name || "user"}`.toLowerCase().replace(/\s+/g, "") + "@bizzdeck.com",
+                name: uData.name || "Restaurant Partner",
+                role: uData.role || "customer",
+                plan: uData.plan || "pro",
                 restaurants: mergedRests,
-                phone: profileData?.phone || profileData?.phoneNumber || uData.phone || uData.phoneNumber || `+91 ${phone}`,
+                phone: uData.phone || uData.phoneNumber || `+91 ${phone}`,
               };
 
               if (typeof window !== "undefined") {
@@ -682,21 +640,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               }
 
               setUser(loggedUser);
-              resolve(loggedUser);
+              finish(() => resolve(loggedUser));
+
+              if (uData.id !== "demo-id") {
+                axios.request({
+                  method: "GET",
+                  url: `/v1/users/${uData.id}`,
+                  timeout: 6000,
+                  params: {
+                    restaurant_info: "false",
+                    sales_info: "false",
+                  },
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                  },
+                }).then((profileRes) => {
+                  if (!profileRes.data?.success || !profileRes.data?.data) return;
+                  const profileData = profileRes.data.data;
+                  const profileRests = (profileData.restaurants || []).map((r: ApiRestaurant) => mapResponseToRestaurant(r));
+                  const nextUser: User = {
+                    ...loggedUser,
+                    ...profileData,
+                    id: String(profileData.id || loggedUser.id),
+                    role: profileData.role || loggedUser.role,
+                    plan: profileData.plan || loggedUser.plan,
+                    restaurants: profileRests.length > 0 ? profileRests : loggedUser.restaurants,
+                    phone: profileData.phone || profileData.phoneNumber || loggedUser.phone,
+                  };
+                  setUser(nextUser);
+                  localStorage.setItem("user", JSON.stringify(nextUser));
+                }).catch((profileErr) => {
+                  console.warn("Profile refresh after login skipped:", getApiErrorMessage(profileErr, "Profile request timed out."));
+                });
+              }
             } else {
-              reject(new Error("Sign-in failed. Please try again."));
+              finish(() => reject(new Error("Sign-in failed. Please try again.")));
             }
           } catch (err: unknown) {
-            console.error("Sign-in API call failed:", err);
-            const errObj = err as { response?: { data?: { message?: string } }; message?: string } | null;
-            const errMsg = errObj?.response?.data?.message || errObj?.message || "Sign-in failed. Please try again.";
-            reject(new Error(errMsg));
+            console.error("Sign-in API call failed:", getApiErrorMessage(err, "Sign-in failed. Please try again."));
+            finish(() => reject(new Error(getApiErrorMessage(err, "Sign-in failed. Please try again."))));
           }
         },
         (error: unknown) => {
           console.error("MSG91 verifyOtp failure:", error);
           const errorObj = error as { message?: string } | null;
-          reject(new Error(errorObj?.message || "Incorrect OTP. Please try again."));
+          finish(() => reject(new Error(errorObj?.message || "Incorrect OTP. Please try again.")));
         }
       );
     });
@@ -802,8 +790,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      console.log("Posting restaurant payload:", payload);
-      console.log("Authorization Token:", token);
       const response = await axios.post("/v1/restaurants", payload, {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -827,9 +813,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error(response.data?.message || "Failed to create restaurant");
       }
     } catch (err: unknown) {
-      const errorObj = err as { response?: { data?: unknown }; message?: string };
-      console.error("Failed to create restaurant API error response:", errorObj.response?.data || errorObj.message);
-      throw err;
+      const message = getApiErrorMessage(err, "Failed to create restaurant");
+      console.error("Failed to create restaurant:", message);
+      throw new Error(message);
     }
   }, [user]);
 

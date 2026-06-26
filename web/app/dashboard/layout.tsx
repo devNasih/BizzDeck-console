@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 export const metadata: Metadata = {
   title: "Dashboard",
-  description: "Your BizzDeck premium tools — calculators, SOA decoder, recipes, and reports.",
+  description: "Your BizzDeck premium tools — calculators, SOA analyser, recipes, and reports.",
   robots: { index: false, follow: false },
 };
 
