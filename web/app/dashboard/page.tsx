@@ -4,18 +4,30 @@
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Calculator, Receipt, ChefHat, FileText, CalendarCheck2,
-  TrendingUp, FileBarChart2, LogOut, ArrowRight, Plus, Trash2,
+  TrendingUp, FileBarChart2, LogOut, ArrowRight, ArrowUp, ArrowDown, Plus, Trash2,
   Sparkles, X, ChevronDown, Store,
-  ChevronLeft, ChevronRight, UserCircle, Ticket, Lock,
-  ArrowUp, ArrowDown,
+  ChevronLeft, ChevronRight, UserCircle, Ticket, Lock, MessageSquareText, RefreshCw,
 } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LabelList,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { useAuth, Restaurant } from "@/components/auth/AuthProvider";
-import { getApiErrorMessage } from "@/lib/api";
+import { getApiErrorMessage, logApiIssue } from "@/lib/api";
 import axios from "axios";
 import { Toast } from "@/components/ui/Toast";
 
@@ -251,6 +263,548 @@ type OverallSales = {
   netPayable?: number | string | null;
 };
 
+type MonthwiseReferenceEntity = {
+  month?: number | string | null;
+  year?: number | null;
+  totalSales?: number | null;
+  total_sales?: number | null;
+  percentageChangeFromLastMonth?: string | number | null;
+  compare?: {
+    zomatoSales?: number | null;
+    swiggySales?: number | null;
+    percentages?: {
+      head?: string | null;
+      zomato?: string | null;
+      swiggy?: string | null;
+    }[] | null;
+  } | null;
+};
+
+type ChartPoint = {
+  index: number;
+  label: string;
+  month: number;
+  year: number;
+  totalSales: number | null;
+  isMissing: boolean;
+};
+
+type SalesAnalyticsChartProps = {
+  monthwiseReferenceReports?: MonthwiseReferenceEntity[] | null;
+};
+
+const MONTH_ABBREVIATIONS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function getMonthAbbr(month?: number | null): string {
+  if (month == null) return "";
+  return MONTH_ABBREVIATIONS[month - 1] || "";
+}
+
+function formatFullCurrency(value: number): string {
+  return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+}
+
+function formatGraphValue(value: number): string {
+  const absoluteValue = Math.abs(value);
+  if (absoluteValue >= 100000) return `₹${(value / 100000).toFixed(1)}L`;
+  if (absoluteValue >= 1000) return `₹${(value / 1000).toFixed(1)}K`;
+  return `₹${value.toLocaleString("en-IN", { maximumFractionDigits: 1 })}`;
+}
+
+function getReferenceSales(reference: MonthwiseReferenceEntity): number | null {
+  const value = reference.totalSales ?? reference.total_sales;
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  return Number(value);
+}
+
+function buildChartData(reports?: MonthwiseReferenceEntity[] | null): ChartPoint[] {
+  const sortedReports = [...(reports || [])]
+    .filter((report) => {
+      const month = getReportMonthNumber(report.month);
+      return month >= 1 && month <= 12 && Number.isFinite(Number(report.year));
+    })
+    .sort((a, b) => (Number(a.year) * 12 + getReportMonthNumber(a.month)) - (Number(b.year) * 12 + getReportMonthNumber(b.month)));
+
+  if (sortedReports.length === 0) return [];
+
+  const first = sortedReports[0];
+  const last = sortedReports[sortedReports.length - 1];
+  const firstIndex = Number(first.year) * 12 + getReportMonthNumber(first.month) - 1;
+  const lastIndex = Number(last.year) * 12 + getReportMonthNumber(last.month) - 1;
+  const reportsByMonth = new Map(sortedReports.map((report) => [
+    Number(report.year) * 12 + getReportMonthNumber(report.month) - 1,
+    report,
+  ]));
+
+  return Array.from({ length: lastIndex - firstIndex + 1 }, (_, index) => {
+    const absoluteMonth = firstIndex + index;
+    const year = Math.floor(absoluteMonth / 12);
+    const month = absoluteMonth % 12 + 1;
+    const report = reportsByMonth.get(absoluteMonth);
+    const totalSales = report ? getReferenceSales(report) : null;
+
+    return {
+      index,
+      label: getMonthAbbr(month),
+      month,
+      year,
+      totalSales,
+      isMissing: !report || totalSales === null,
+    };
+  });
+}
+
+function SalesAnalyticsChart({ monthwiseReferenceReports }: SalesAnalyticsChartProps) {
+  const chartData = useMemo(() => buildChartData(monthwiseReferenceReports), [monthwiseReferenceReports]);
+  const sortedReports = useMemo(() => [...(monthwiseReferenceReports || [])]
+    .filter((report) => getReportMonthNumber(report.month) > 0 && Number.isFinite(Number(report.year)))
+    .sort((a, b) => (Number(a.year) * 12 + getReportMonthNumber(a.month)) - (Number(b.year) * 12 + getReportMonthNumber(b.month))), [monthwiseReferenceReports]);
+  const latestReport = sortedReports[sortedReports.length - 1];
+  const latestSales = latestReport ? getReferenceSales(latestReport) : null;
+  const percentageText = latestReport?.percentageChangeFromLastMonth != null
+    ? String(latestReport.percentageChangeFromLastMonth)
+    : "";
+  const percentageValue = Number.parseFloat(percentageText.replace(/[^\d.-]/g, ""));
+
+  const renderMonthTick = ({ x = 0, y = 0, payload }: {
+    x?: string | number;
+    y?: string | number;
+    payload?: { value?: string | number; index?: number };
+  }) => {
+    const point = payload?.index != null ? chartData[payload.index] : undefined;
+    const isMissing = Boolean(point?.isMissing);
+    return (
+      <g transform={`translate(${Number(x)},${Number(y)})`}>
+        {isMissing && <text x={0} y={5} textAnchor="middle" fill="#D97706" fontSize={10}>▲</text>}
+        <text
+          x={0}
+          y={isMissing ? 20 : 14}
+          textAnchor="middle"
+          fill={isMissing ? "#C2410C" : "#9CA3AF"}
+          fontSize={11}
+          fontWeight={isMissing ? 600 : 400}
+        >
+          {payload?.value}
+        </text>
+      </g>
+    );
+  };
+
+  if (chartData.length === 0) {
+    return (
+      <section className="rounded-xl bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
+        <div className="flex h-[200px] items-center justify-center text-sm font-semibold text-gray-500">No data available</div>
+        <div className="border-t border-gray-100 pt-3 pl-1">
+          <p className="text-xs font-semibold tracking-wide text-gray-700">LATEST MONTH&apos;S INSIGHTS</p>
+          <p className="mt-2 text-sm text-gray-500">No data available</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="rounded-xl bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
+      <h3 className="mb-3 font-display text-lg font-semibold text-bd-tealDeep">Total Sales</h3>
+      <div className="h-[200px] w-full">
+        <ResponsiveContainer width="100%" height="100%" className="[&_*]:outline-none">
+          <AreaChart accessibilityLayer={false} data={chartData} margin={{ top: 32, right: 24, left: 24, bottom: 12 }}>
+            <defs>
+              <linearGradient id="salesGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#4FC3F7" stopOpacity={0.3} />
+                <stop offset="100%" stopColor="#4FC3F7" stopOpacity={0.05} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke="#D1D5DB" strokeDasharray="5 5" vertical horizontal={false} />
+            <XAxis
+              dataKey="label"
+              axisLine={false}
+              tickLine={false}
+              interval={0}
+              height={36}
+              tick={renderMonthTick}
+            />
+            <Tooltip
+              cursor={{ stroke: "#BAE6FD", strokeDasharray: "4 4" }}
+              content={({ active, payload }) => {
+                if (!active || !payload?.length || payload[0]?.value == null) return null;
+                return (
+                  <div className="rounded-md bg-white/95 px-2 py-1 text-xs font-medium text-gray-900 shadow-md">
+                    {formatFullCurrency(Number(payload[0].value))}
+                  </div>
+                );
+              }}
+            />
+            <Area type="monotone" dataKey="totalSales" stroke="none" fill="url(#salesGradient)" connectNulls={false} isAnimationActive={false} />
+            <Line
+              type="monotone"
+              dataKey="totalSales"
+              stroke="#4FC3F7"
+              strokeWidth={3}
+              connectNulls={false}
+              dot={{ r: 4, fill: "#4FC3F7", stroke: "#FFFFFF", strokeWidth: 2 }}
+              activeDot={{ r: 5, fill: "#4FC3F7", stroke: "#FFFFFF", strokeWidth: 2 }}
+            >
+              <LabelList
+                dataKey="totalSales"
+                position="top"
+                offset={9}
+                formatter={(value) => value == null ? "" : formatGraphValue(Number(value))}
+                style={{ fill: "#4B5563", fontSize: 10, fontWeight: 500 }}
+              />
+            </Line>
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="border-t border-gray-100 pt-3 pl-1">
+        <p className="text-xs font-medium tracking-wide text-gray-600">LATEST MONTH&apos;S INSIGHTS</p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+          <p className="font-display font-semibold text-bd-tealDeep">
+            {getMonthAbbr(getReportMonthNumber(latestReport?.month))} {latestReport?.year}
+          </p>
+          {latestSales !== null && <p className="font-medium text-gray-900">{formatFullCurrency(latestSales)}</p>}
+          {percentageText && (
+            <p className={`inline-flex items-center gap-1 ${Number.isFinite(percentageValue) && percentageValue < 0 ? "text-red-600" : "text-green-600"}`}>
+              {Number.isFinite(percentageValue) && percentageValue < 0
+                ? <ArrowDown size={14} strokeWidth={2} />
+                : <ArrowUp size={14} strokeWidth={2} />}
+              <span className="font-medium">{percentageText}</span>
+            </p>
+          )}
+          {latestReport?.compare?.swiggySales != null && <p className="text-gray-600">Swiggy: <span className="font-medium text-gray-900">{formatFullCurrency(latestReport.compare.swiggySales)}</span></p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type ProfitChartPoint = {
+  index: number;
+  monthLabel: string;
+  month?: number | null;
+  year?: number | null;
+  profitPercentage: number;
+};
+
+type ProfitPercentageChartProps = {
+  monthwiseReferenceReports?: MonthwiseReferenceEntity[] | null;
+  aggregator: string;
+};
+
+function parseProfitPercentage(value?: string | null): number {
+  if (!value || value.trim().toLowerCase() === "null") return 0;
+  const parsed = Number(value.replace("%", "").trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getProfitPercentage(report: MonthwiseReferenceEntity, aggregator: string): number {
+  const profitItem = report.compare?.percentages?.find(
+    (percentage) => percentage.head?.trim().toLowerCase() === "profit",
+  );
+  if (!profitItem) return 0;
+
+  return parseProfitPercentage(
+    aggregator.toLowerCase() === "zomato" ? profitItem.zomato : profitItem.swiggy,
+  );
+}
+
+function buildProfitChartData(
+  reports?: MonthwiseReferenceEntity[] | null,
+  aggregator = "zomato",
+): ProfitChartPoint[] {
+  return [...(reports || [])]
+    .filter((report) => {
+      const month = getReportMonthNumber(report.month);
+      return month >= 1 && month <= 12 && Number.isFinite(Number(report.year));
+    })
+    .sort((a, b) => (Number(a.year) * 12 + getReportMonthNumber(a.month)) - (Number(b.year) * 12 + getReportMonthNumber(b.month)))
+    .map((report, index) => {
+      const month = getReportMonthNumber(report.month);
+      return {
+        index,
+        monthLabel: getMonthAbbr(month),
+        month,
+        year: report.year,
+        profitPercentage: getProfitPercentage(report, aggregator),
+      };
+    });
+}
+
+function ProfitPercentageChart({
+  monthwiseReferenceReports,
+  aggregator,
+}: ProfitPercentageChartProps) {
+  const chartData = useMemo(
+    () => buildProfitChartData(monthwiseReferenceReports, aggregator),
+    [aggregator, monthwiseReferenceReports],
+  );
+  const maxAbsolutePercentage = Math.max(
+    1,
+    ...chartData.map((point) => Math.abs(point.profitPercentage)),
+  );
+
+  return (
+    <section className="rounded-xl bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-medium tracking-wide text-gray-600">PROFIT PERCENTAGE</p>
+      </div>
+      {chartData.length === 0 ? (
+        <div className="flex h-[240px] items-center justify-center text-sm text-gray-500">No data available</div>
+      ) : (
+        <div className="mt-4 overflow-x-auto pb-1">
+          <div className="mb-2 flex items-center justify-end gap-4 text-[10px] font-medium uppercase tracking-wide text-gray-500">
+            <span className="inline-flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-emerald-500" /> Profit</span>
+            <span className="inline-flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-red-500" /> Loss</span>
+          </div>
+          <div className="relative h-[230px] min-w-[32rem] rounded-lg bg-gray-50/50 px-3">
+            <span className="absolute left-3 right-3 top-1/2 h-px bg-gray-300" />
+            <div className="relative z-10 flex h-full items-stretch justify-around gap-3">
+              {chartData.map((entry) => {
+                const isPositive = entry.profitPercentage >= 0;
+                const barHeight = Math.max(3, Math.abs(entry.profitPercentage) / maxAbsolutePercentage * 72);
+                return (
+                  <div
+                    key={`${entry.year}-${entry.month}-${entry.index}`}
+                    className="relative h-full min-w-12 flex-1"
+                  >
+                    <span
+                      className={`absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] font-medium tabular-nums ${isPositive ? "text-emerald-700" : "text-red-600"}`}
+                      style={isPositive
+                        ? { bottom: `calc(50% + ${barHeight + 6}px)` }
+                        : { top: `calc(50% + ${barHeight + 6}px)` }}
+                    >
+                      {entry.profitPercentage > 0 ? "+" : ""}{entry.profitPercentage.toFixed(2)}%
+                    </span>
+                    <span
+                      className={`absolute left-1/2 w-6 -translate-x-1/2 ${isPositive ? "bottom-1/2 rounded-t-md bg-emerald-500" : "top-1/2 rounded-b-md bg-red-500"}`}
+                      style={{ height: barHeight }}
+                    />
+                    <span className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs font-medium text-gray-600">
+                      {entry.monthLabel}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+type PercentageChartPoint = {
+  index: number;
+  monthLabel: string;
+  month: number;
+  year: number;
+  value: number | null;
+  isMissing: boolean;
+};
+
+type NetDeductionPercentageChartProps = {
+  monthwiseReferenceReports?: MonthwiseReferenceEntity[] | null;
+  aggregator: string;
+};
+
+function parseOptionalPercentageValue(value?: string | null): number | null {
+  if (!value || value.trim().toLowerCase() === "null") return null;
+  const parsed = Number(value.replace("%", "").trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getPercentageValue(
+  report: MonthwiseReferenceEntity | null | undefined,
+  aggregator: string,
+  headTitle: string,
+): number | null {
+  const comparison = report?.compare?.percentages?.find(
+    (percentage) => percentage.head?.trim().toLowerCase() === headTitle.toLowerCase(),
+  );
+  if (!comparison) return null;
+  return parseOptionalPercentageValue(
+    aggregator.toLowerCase() === "swiggy" ? comparison.swiggy : comparison.zomato,
+  );
+}
+
+function buildPercentageChartData(
+  reports?: MonthwiseReferenceEntity[] | null,
+  aggregator = "zomato",
+  headTitle = "Net Deduction",
+): PercentageChartPoint[] {
+  const sortedReports = [...(reports || [])]
+    .filter((report) => {
+      const month = getReportMonthNumber(report.month);
+      return month >= 1 && month <= 12 && Number.isFinite(Number(report.year));
+    })
+    .sort((a, b) => (Number(a.year) * 12 + getReportMonthNumber(a.month)) - (Number(b.year) * 12 + getReportMonthNumber(b.month)));
+
+  if (sortedReports.length === 0) return [];
+
+  const firstIndex = Number(sortedReports[0].year) * 12 + getReportMonthNumber(sortedReports[0].month) - 1;
+  const lastReport = sortedReports[sortedReports.length - 1];
+  const lastIndex = Number(lastReport.year) * 12 + getReportMonthNumber(lastReport.month) - 1;
+  const reportsByMonth = new Map(sortedReports.map((report) => [
+    Number(report.year) * 12 + getReportMonthNumber(report.month) - 1,
+    report,
+  ]));
+
+  return Array.from({ length: lastIndex - firstIndex + 1 }, (_, index) => {
+    const absoluteMonth = firstIndex + index;
+    const year = Math.floor(absoluteMonth / 12);
+    const month = absoluteMonth % 12 + 1;
+    const report = reportsByMonth.get(absoluteMonth);
+    const value = getPercentageValue(report, aggregator, headTitle);
+    return {
+      index,
+      monthLabel: getMonthAbbr(month),
+      month,
+      year,
+      value,
+      isMissing: !report || value === null,
+    };
+  });
+}
+
+type AdsDeductionPercentageChartProps = {
+  monthwiseReferenceReports?: MonthwiseReferenceEntity[] | null;
+  aggregator: string;
+};
+
+type DiscountBurnPercentageChartProps = AdsDeductionPercentageChartProps;
+
+function PercentageLineChartCard({
+  title,
+  headTitle,
+  monthwiseReferenceReports,
+  aggregator,
+  gradientId,
+}: AdsDeductionPercentageChartProps & {
+  title: string;
+  headTitle: string;
+  gradientId: string;
+}) {
+  const chartData = useMemo(
+    () => buildPercentageChartData(monthwiseReferenceReports, aggregator, headTitle),
+    [aggregator, headTitle, monthwiseReferenceReports],
+  );
+  const aggregatorColor = aggregator.toLowerCase() === "swiggy" ? "#FC8019" : "#E23744";
+  const values = chartData.flatMap((point) => point.value == null ? [] : [point.value]);
+  const maxY = values.length > 0 ? Math.max(0, ...values) : 0;
+  const minY = values.length > 0 ? Math.min(0, ...values) : 0;
+  const range = maxY - minY;
+  const chartMaxY = maxY + (range === 0 ? 0.5 : range * 0.2);
+  const chartMinY = minY - (range === 0 ? 0.5 : range * 0.2);
+
+  const renderPercentageTick = ({ x = 0, y = 0, payload }: {
+    x?: string | number;
+    y?: string | number;
+    payload?: { value?: string | number; index?: number };
+  }) => {
+    const point = payload?.index != null ? chartData[payload.index] : undefined;
+    const isMissing = Boolean(point?.isMissing);
+    return (
+      <g transform={`translate(${Number(x)},${Number(y)})`}>
+        {isMissing && <text x={0} y={5} textAnchor="middle" fill="#D97706" fontSize={10}>▲</text>}
+        <text x={0} y={isMissing ? 20 : 14} textAnchor="middle" fill={isMissing ? "#C2410C" : "#9CA3AF"} fontSize={11} fontWeight={isMissing ? 600 : 400}>
+          {payload?.value}
+        </text>
+      </g>
+    );
+  };
+
+  return (
+    <section className="rounded-xl bg-white p-4 shadow-[0_2px_10px_rgba(0,0,0,0.05)]">
+      <p className="text-xs font-medium tracking-wide text-gray-600">{title}</p>
+      {chartData.length === 0 ? (
+        <div className="flex h-[200px] items-center justify-center text-sm text-gray-500">No data available</div>
+      ) : (
+        <div className="relative mt-5 h-[200px]">
+          <ResponsiveContainer width="100%" height="100%" className="[&_*]:outline-none">
+            <AreaChart accessibilityLayer={false} data={chartData} margin={{ top: 34, right: 24, left: 24, bottom: 10 }}>
+              <defs>
+                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={aggregatorColor} stopOpacity={0.3} />
+                  <stop offset="100%" stopColor={aggregatorColor} stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical horizontal={false} stroke="#D1D5DB" strokeDasharray="5 5" />
+              <XAxis dataKey="monthLabel" axisLine={false} tickLine={false} interval={0} height={36} tick={renderPercentageTick} />
+              <YAxis hide domain={[chartMinY, chartMaxY]} />
+              <Tooltip
+                cursor={{ stroke: `${aggregatorColor}33`, strokeDasharray: "4 4" }}
+                content={({ active, payload }) => {
+                  if (!active || !payload?.length || payload[0]?.value == null) return null;
+                  return (
+                    <div className="rounded bg-white/90 px-2 py-1 text-[11px] font-medium shadow">
+                      <span style={{ color: aggregatorColor }}>{Number(payload[0].value).toFixed(2)}%</span>
+                    </div>
+                  );
+                }}
+              />
+              <Area
+                type="monotone"
+                dataKey="value"
+                stroke={aggregatorColor}
+                strokeWidth={3}
+                fill={`url(#${gradientId})`}
+                fillOpacity={1}
+                connectNulls={false}
+                dot={{ r: 5, fill: aggregatorColor, stroke: "#FFFFFF", strokeWidth: 3 }}
+                activeDot={{ r: 6, fill: aggregatorColor, stroke: "#FFFFFF", strokeWidth: 3 }}
+              >
+                <LabelList
+                  dataKey="value"
+                  position="top"
+                  offset={11}
+                  formatter={(value) => value == null ? "" : `${Number(value).toFixed(2)}%`}
+                  style={{ fill: aggregatorColor, fontSize: 11, fontWeight: 700 }}
+                />
+              </Area>
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function NetDeductionPercentageChart({ monthwiseReferenceReports, aggregator }: NetDeductionPercentageChartProps) {
+  return (
+    <PercentageLineChartCard
+      title="NET DEDUCTION PERCENTAGE"
+      headTitle="Net Deduction"
+      gradientId="netDeductionGradient"
+      monthwiseReferenceReports={monthwiseReferenceReports}
+      aggregator={aggregator}
+    />
+  );
+}
+
+function AdsDeductionPercentageChart({ monthwiseReferenceReports, aggregator }: AdsDeductionPercentageChartProps) {
+  return (
+    <PercentageLineChartCard
+      title="ADS DEDUCTION PERCENTAGE"
+      headTitle="Ads Deduction"
+      gradientId="adsDeductionGradient"
+      monthwiseReferenceReports={monthwiseReferenceReports}
+      aggregator={aggregator}
+    />
+  );
+}
+
+function DiscountBurnPercentageChart({ monthwiseReferenceReports, aggregator }: DiscountBurnPercentageChartProps) {
+  return (
+    <PercentageLineChartCard
+      title="DISCOUNT BURN PERCENTAGE"
+      headTitle="Discount Burn"
+      gradientId="discountBurnGradient"
+      monthwiseReferenceReports={monthwiseReferenceReports}
+      aggregator={aggregator}
+    />
+  );
+}
+
 type SoaMonthOption = {
   value: string;
   label: string;
@@ -333,7 +887,7 @@ function getMonthOptionLabel(reference: MonthwiseRef): string {
 }
 
 function formatCompactAmount(amount: number | string | null | undefined): string {
-  const numValue = Number.parseFloat(String(amount ?? 0)) || 0;
+  const numValue = toFiniteNumber(amount);
 
   if (numValue >= 10000000) {
     const crores = numValue / 10000000;
@@ -353,13 +907,47 @@ function formatCompactAmount(amount: number | string | null | undefined): string
   return numValue.toFixed(0);
 }
 
+function hasMetricValue(value: unknown): boolean {
+  if (value == null) return false;
+  const text = String(value).trim();
+  return text !== "" && text.toLowerCase() !== "null" && text.toLowerCase() !== "undefined" && text.toLowerCase() !== "nan";
+}
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  if (!hasMetricValue(value)) return fallback;
+  const normalized = String(value).replace(/,/g, "").replace(/[^\d.-]/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getMetricValue(value: unknown, fallback: string | number = 0): string | number {
+  return hasMetricValue(value) ? value as string | number : fallback;
+}
+
+function isTemplateNode(value: unknown): value is TemplateNode {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getTemplateNode(template: CalculatedTemplate | undefined, key: string): TemplateNode | undefined {
+  const node = template?.[key];
+  return isTemplateNode(node) ? node : undefined;
+}
+
+function getSafeCalculatedTemplate(details: Partial<AnalysisReport> | null): CalculatedTemplate {
+  return isTemplateNode(details?.calculatedTemplate) ? details.calculatedTemplate : {};
+}
+
+function hasTileData(node: TemplateNode | undefined, data: { components: Record<string, unknown>[] }): boolean {
+  return hasMetricValue(node?.value) || data.components.length > 0;
+}
+
 function getOverallSales(monthwiseReferences: MonthwiseRef[], data: unknown): OverallSales {
   const latestOverall = monthwiseReferences[0]?.overall;
   if (latestOverall) {
     return {
-      grossSales: latestOverall.gross_sales ?? 0,
-      netDeductions: latestOverall.net_deductions ?? 0,
-      netPayable: latestOverall.net_payout ?? 0,
+      grossSales: getMetricValue(latestOverall.gross_sales),
+      netDeductions: getMetricValue(latestOverall.net_deductions),
+      netPayable: getMetricValue(latestOverall.net_payout),
     };
   }
 
@@ -674,9 +1262,15 @@ const MOCK_DETAILS: Record<string, { calculatedTemplate: CalculatedTemplate }> =
 function ProfitLossIndicator({
   reference,
   aggregator,
+  onSeeAllRecommendations,
+  showRecommendationsButton = true,
+  notesTitle = "Action Notes",
 }: {
   reference?: MonthwiseRef;
   aggregator: "zomato" | "swiggy";
+  onSeeAllRecommendations?: () => void;
+  showRecommendationsButton?: boolean;
+  notesTitle?: string;
 }) {
   if (!reference) return null;
 
@@ -690,47 +1284,65 @@ function ProfitLossIndicator({
     : reference.zomatoProfitSuggestion;
   const isLossRisk = platformLossRisk ?? reference.profitExceedsLimit ?? false;
   const statusTitle = isLossRisk ? `${platformName} needs attention` : `${platformName} is profitable`;
-  const statusMessage = isLossRisk
-    ? reference.profitMessage || "Profitability needs improvement"
-    : "Profit is within the healthy range for this platform.";
+  const statusMessage = isLossRisk ? reference.profitMessage || "Profitability needs improvement" : "";
 
   return (
-    <section className={`mx-auto w-full max-w-2xl rounded-2xl border p-4 ${isLossRisk
-        ? "border-red-100 bg-red-50/60"
-        : "border-emerald-100 bg-emerald-50/60"
+    <section className={`w-full rounded-2xl border p-5 shadow-sm sm:p-6 ${isLossRisk
+        ? "border-red-100 bg-red-50/70"
+        : "border-emerald-100 bg-emerald-50/70"
       }`}>
-      <div className="flex items-start gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white bg-white shadow-sm">
-          <img
-            src={platformLogo}
-            alt={platformName}
-            className={aggregator === "swiggy" ? "h-[82%] w-[82%] object-contain" : "h-full w-full object-contain"}
-          />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className={`text-xs font-black uppercase tracking-wider ${isLossRisk ? "text-red-700" : "text-emerald-700"
-              }`}>
-              {statusTitle}
-            </p>
-            <span className={`h-2 w-2 rounded-full ${isLossRisk ? "bg-red-500" : "bg-emerald-500"}`} />
+      <div className="grid gap-5 lg:grid-cols-[1.1fr_1.4fr] lg:items-stretch">
+        <div className="flex min-h-44 flex-col justify-between rounded-xl border border-white/80 bg-white/80 p-5 shadow-sm">
+          <div className="flex items-start gap-4">
+            <span className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-neutral-100 bg-white shadow-sm">
+              <img
+                src={platformLogo}
+                alt={platformName}
+                className={aggregator === "swiggy" ? "h-[82%] w-[82%] object-contain" : "h-full w-full object-contain"}
+              />
+            </span>
           </div>
-          <p className="mt-1 text-sm font-semibold text-bd-tealDeep">
-            {statusMessage}
-          </p>
+          <div className="mt-8">
+            <p className="text-xs font-black uppercase tracking-wider text-black/60">{platformName} Profit Check</p>
+            <h3 className="mt-2 font-display text-2xl font-black leading-tight sm:text-3xl">
+              {statusTitle}
+            </h3>
+            {statusMessage && (
+              <p className="mt-3 text-sm font-semibold leading-relaxed text-black/75">
+                {statusMessage}
+              </p>
+            )}
+          </div>
+        </div>
 
-          {suggestions && suggestions.length > 0 && (
-            <div className="mt-3 rounded-xl border border-white/80 bg-white/70 p-3">
-              <p className="text-[10px] font-black uppercase tracking-wider text-bd-inkSoft">Suggestions</p>
-              <ul className="mt-2 space-y-1.5">
-                {suggestions.map((suggestion) => (
-                  <li key={suggestion} className="flex gap-2 text-xs font-semibold leading-relaxed text-bd-tealDeep">
-                    <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${isLossRisk ? "bg-red-500" : "bg-emerald-500"}`} />
-                    <span>{suggestion}</span>
-                  </li>
-                ))}
-              </ul>
+        <div className="rounded-xl border border-white/80 bg-white/80 p-5 shadow-sm">
+          <div className="border-b border-neutral-100 pb-3">
+            <p className="text-xs font-black uppercase tracking-wider text-black/60">{notesTitle}</p>
+          </div>
+
+          {suggestions && suggestions.length > 0 ? (
+            <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+              {suggestions.map((suggestion) => (
+                <li key={suggestion} className="flex gap-3 rounded-lg border border-neutral-100 bg-white px-3 py-3 text-xs font-semibold leading-relaxed shadow-sm">
+                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${isLossRisk ? "bg-red-500" : "bg-emerald-500"}`} />
+                  <span>{suggestion}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="mt-4 rounded-lg border border-neutral-100 bg-white px-4 py-5 text-sm font-semibold text-black/75 shadow-sm">
+              No action notes are available for this platform.
             </div>
+          )}
+          {showRecommendationsButton && onSeeAllRecommendations && (
+            <button
+              type="button"
+              onClick={onSeeAllRecommendations}
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-bd-tealDeep px-4 py-3 text-sm font-bold !text-white transition hover:bg-bd-tealLight [&_*]:!text-white"
+            >
+              See All Recommendations
+              <ArrowRight size={16} />
+            </button>
           )}
         </div>
       </div>
@@ -748,6 +1360,7 @@ type ExpandableTilesProps = {
   showPieChart?: boolean;
   pieColors?: string[];
   noNeedtoShowDots?: boolean;
+  size?: "normal" | "wide" | "chartWide";
 };
 
 function ExpandableTiles({
@@ -758,9 +1371,12 @@ function ExpandableTiles({
   showPieChart = false,
   pieColors,
   noNeedtoShowDots = false,
+  size = "normal",
 }: ExpandableTilesProps) {
   const components = data?.components || [];
   const [expandedSubKeys, setExpandedSubKeys] = useState<Record<string, boolean>>({});
+  const isWide = size === "wide";
+  const isChartWide = size === "chartWide";
 
   const toggleSubKey = (key: string) => {
     setExpandedSubKeys(prev => ({ ...prev, [key]: !prev[key] }));
@@ -769,7 +1385,8 @@ function ExpandableTiles({
   const formatDisplayValue = (val: string | number | unknown) => {
     if (val == null) return "0";
     const strVal = String(val);
-    const num = Number(strVal);
+    if (!hasMetricValue(strVal)) return "0";
+    const num = toFiniteNumber(strVal, NaN);
     if (isNaN(num)) return strVal;
     const formatted = num.toFixed(2);
     if (formatted.endsWith(".00")) return formatted.slice(0, -3);
@@ -782,9 +1399,9 @@ function ExpandableTiles({
   const parsedValues = components.map(c => {
     const key = Object.keys(c).find(k => k !== "splitups") || "";
     const valStr = key ? String(c[key] ?? "") : "";
-    const val = Number(valStr.replace(/[^0-9.-]/g, ""));
+    const val = toFiniteNumber(valStr, 0);
     const splitups = c.splitups as Record<string, unknown>[] | undefined;
-    return { key, val: isNaN(val) ? 0 : val, splitups };
+    return { key, val, splitups };
   }).filter(item => item.key !== "");
 
   const sum = parsedValues.reduce((acc, curr) => acc + Math.abs(curr.val), 0);
@@ -804,23 +1421,23 @@ function ExpandableTiles({
   });
 
   return (
-    <div className="mx-auto w-full max-w-2xl rounded-2xl border border-bd-border bg-white shadow-sm overflow-hidden animate-in fade-in duration-200">
+    <div className={`${isWide || isChartWide ? "w-full" : "mx-auto w-full max-w-2xl"} rounded-2xl border ${isChartWide ? "border-neutral-200/70" : "border-bd-border"} bg-white ${isChartWide ? "shadow-[0_8px_28px_rgba(15,23,42,0.04)]" : "shadow-sm"} overflow-hidden animate-in fade-in duration-200`}>
       <div
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left border-b border-bd-border bg-neutral-50/10"
+        className={`flex w-full items-center justify-between gap-3 text-left border-b ${isChartWide ? "border-neutral-100 bg-[#FAFAF8]" : "border-bd-border bg-neutral-50/10"} ${isWide || isChartWide ? "px-6 py-5" : "px-4 py-3"}`}
       >
-        <span className="text-[10px] font-black uppercase tracking-wider text-bd-inkSoft">
+        <span className={`${isWide || isChartWide ? "text-xs" : "text-[10px]"} ${isChartWide ? "font-semibold" : "font-black"} uppercase tracking-wider ${isChartWide ? "text-black/55" : "text-bd-inkSoft"}`}>
           {title}
         </span>
-        <span className="font-display text-lg font-black text-bd-tealDeep">
+        <span className={`font-display ${isChartWide ? "font-semibold text-black" : "font-black text-bd-tealDeep"} ${isWide ? "text-4xl" : isChartWide ? "text-3xl" : "text-lg"}`}>
           {showRupeeIcon ? `₹ ${formatDisplayValue(totalAmount)}` : formatDisplayValue(totalAmount)}
         </span>
       </div>
 
-      <div className="px-4 pb-3 pt-3 bg-neutral-50/30">
+      <div className={`${isWide || isChartWide ? "px-6 pb-6 pt-5" : "px-4 pb-3 pt-3"} ${isChartWide ? "bg-[#FCFCFA]" : "bg-neutral-50/30"}`}>
         {showPieChart && components.length > 0 ? (
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-6 py-2">
-            <div className="relative flex items-center justify-center h-28 w-28 shrink-0">
-              <svg viewBox="0 0 160 160" className="w-full h-full transform -rotate-90">
+          <div className={isChartWide ? "grid gap-7 py-2 lg:grid-cols-[310px_1fr] lg:items-center" : "flex flex-col sm:flex-row items-center justify-between gap-6 py-2"}>
+            <div className={`relative flex items-center justify-center shrink-0 rounded-full ${isChartWide ? "mx-auto h-72 w-72" : "h-28 w-28"}`}>
+              <svg viewBox="0 0 160 160" className="w-full h-full animate-in zoom-in-95 duration-700 transform -rotate-90">
                 {segments.map((seg, idx) => (
                   <circle
                     key={idx}
@@ -829,21 +1446,38 @@ function ExpandableTiles({
                     r="50"
                     fill="transparent"
                     stroke={seg.color}
-                    strokeWidth="20"
+                    strokeWidth={isChartWide ? "13" : "20"}
                     strokeDasharray={seg.strokeDasharray}
                     strokeDashoffset={seg.strokeDashoffset}
-                  />
+                  >
+                    <animate
+                      attributeName="stroke-dasharray"
+                      from={`0 ${circ}`}
+                      to={seg.strokeDasharray}
+                      dur="900ms"
+                      begin={`${120 + idx * 90}ms`}
+                      fill="freeze"
+                    />
+                    <animate
+                      attributeName="opacity"
+                      from="0.35"
+                      to="1"
+                      dur="900ms"
+                      begin={`${120 + idx * 90}ms`}
+                      fill="freeze"
+                    />
+                  </circle>
                 ))}
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center px-1">
-                <span className="text-[8px] uppercase tracking-wider text-bd-inkSoft font-bold">Total</span>
-                <span className="font-display text-[10px] font-black text-bd-tealDeep truncate max-w-full">
+                <span className={`${isChartWide ? "text-[10px]" : "text-[8px]"} uppercase tracking-wider ${isChartWide ? "text-black/45 font-semibold" : "text-bd-inkSoft font-bold"}`}>Total</span>
+                <span className={`font-display truncate max-w-full ${isChartWide ? "text-lg font-semibold text-black" : "text-[10px] font-black text-bd-tealDeep"}`}>
                   {showRupeeIcon ? `₹${formatDisplayValue(totalAmount)}` : formatDisplayValue(totalAmount)}
                 </span>
               </div>
             </div>
 
-            <div className="flex-1 w-full space-y-2">
+            <div className={`flex-1 w-full ${isChartWide ? "grid gap-3 sm:grid-cols-2" : "space-y-2"}`}>
               {segments.map((seg, idx) => {
                 const hasSplitups = seg.splitups && seg.splitups.length > 0;
                 const isSubExpanded = !!expandedSubKeys[seg.key];
@@ -851,13 +1485,13 @@ function ExpandableTiles({
 
                 return (
                   <div key={idx} className="space-y-1">
-                    <div className="flex items-center justify-between gap-3 rounded-lg bg-bd-section px-3 py-2 text-xs">
+                    <div className={`flex items-center justify-between gap-3 rounded-lg ${isChartWide ? "border border-neutral-100 bg-white px-4 py-3 text-sm shadow-[0_2px_10px_rgba(15,23,42,0.025)]" : "bg-bd-section px-3 py-2 text-xs"}`}>
                       <div className="flex items-center gap-2">
                         {!noNeedtoShowDots && (
                           <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: seg.color }} />
                         )}
                         <div className="flex items-center gap-1">
-                          <span className="font-semibold text-bd-inkSoft">{seg.key}</span>
+                          <span className={`${isChartWide ? "font-medium text-black/70" : "font-semibold text-bd-inkSoft"}`}>{seg.key}</span>
                           {hasSplitups && (
                             <button
                               type="button"
@@ -873,7 +1507,7 @@ function ExpandableTiles({
                           )}
                         </div>
                       </div>
-                      <span className="font-black text-bd-tealDeep">
+                      <span className={`${isChartWide ? "text-lg font-semibold text-black" : "font-black text-bd-tealDeep"}`}>
                         {showRupeeIcon ? `₹ ${formatDisplayValue(seg.val)}` : formatDisplayValue(seg.val)}
                       </span>
                     </div>
@@ -884,9 +1518,9 @@ function ExpandableTiles({
                         style={{ borderLeftColor: seg.color }}
                       >
                         {splitupItems.map(([subKey, subVal]) => (
-                          <div key={subKey} className="flex justify-between items-center text-[10px] py-1 text-bd-inkSoft">
+                          <div key={subKey} className={`flex justify-between items-center py-1 ${isChartWide ? "text-xs text-black/55" : "text-[10px] text-bd-inkSoft"}`}>
                             <span className="font-medium">{subKey}</span>
-                            <span className="font-bold text-bd-tealDeep">
+                            <span className={`${isChartWide ? "font-medium text-black/70" : "font-bold text-bd-tealDeep"}`}>
                               {showRupeeIcon ? `₹ ${formatDisplayValue(subVal)}` : formatDisplayValue(subVal)}
                             </span>
                           </div>
@@ -900,7 +1534,7 @@ function ExpandableTiles({
           </div>
         ) : (
           components.length > 0 ? (
-            <div className="space-y-2">
+            <div className={isWide ? "grid gap-3 sm:grid-cols-2" : "space-y-2"}>
               {components.map((component, idx) => {
                 const key = Object.keys(component).find(k => k !== "splitups")!;
                 const value = component[key];
@@ -911,7 +1545,7 @@ function ExpandableTiles({
 
                 return (
                   <div key={idx} className="space-y-1">
-                    <div className="flex items-center justify-between gap-3 rounded-lg bg-bd-section px-3 py-2 text-xs">
+                    <div className={`flex items-center justify-between gap-3 rounded-lg bg-bd-section ${isWide ? "px-5 py-4 text-sm" : "px-3 py-2 text-xs"}`}>
                       <div className="flex items-center gap-1">
                         <span className="font-semibold text-bd-inkSoft">{key}</span>
                         {hasSplitups && (
@@ -928,7 +1562,7 @@ function ExpandableTiles({
                           </button>
                         )}
                       </div>
-                      <span className="font-black text-bd-tealDeep">
+                      <span className={`font-black text-bd-tealDeep ${isWide ? "text-2xl" : ""}`}>
                         {showRupeeIcon ? `₹ ${formatDisplayValue(value)}` : formatDisplayValue(value)}
                       </span>
                     </div>
@@ -949,9 +1583,7 @@ function ExpandableTiles({
                 );
               })}
             </div>
-          ) : (
-            <p className="text-xs font-semibold text-bd-inkSoft">No component breakup available.</p>
-          )
+          ) : null
         )}
       </div>
     </div>
@@ -959,36 +1591,34 @@ function ExpandableTiles({
 }
 
 /* ── CompareGrossSaleCard ── */
-function parsePercentageValue(value: string): number {
-  return Number(value.replace(/[^0-9.]/g, "")) || 0;
+function parsePercentageValue(value: unknown): number {
+  return toFiniteNumber(value, 0);
 }
 
-function formatCurrencyAmount(value: number): string {
-  if (value >= 10000000) return `${(value / 10000000).toFixed(2)} Cr`;
-  if (value >= 100000) return `${(value / 100000).toFixed(2)} L`;
-  if (value >= 1000) return `${(value / 1000).toFixed(2)} K`;
-  return value.toFixed(2);
+function formatCurrencyAmount(value: unknown): string {
+  const amount = toFiniteNumber(value, 0);
+  return amount.toLocaleString("en-IN", {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+  });
 }
 
 function CompareGrossSaleCard({ data }: { data?: MonthwiseRef | null }) {
   const compareData = data?.compare;
-  const zomatoSales = compareData?.zomatoSales ?? 0;
-  const swiggySales = compareData?.swiggySales ?? 0;
-  const totalSales = data?.total_sales ?? (zomatoSales + swiggySales);
+  const zomatoSales = getMetricValue(compareData?.zomatoSales);
+  const swiggySales = getMetricValue(compareData?.swiggySales);
+  const totalSales = hasMetricValue(data?.total_sales)
+    ? data?.total_sales
+    : toFiniteNumber(zomatoSales) + toFiniteNumber(swiggySales);
 
-  const zomatoPercentString = compareData?.zomatoPercentageOfTotalSales ?? "0%";
-  const swiggyPercentString = compareData?.swiggyPercentageOfTotalSales ?? "0%";
+  const zomatoPercentString = String(getMetricValue(compareData?.zomatoPercentageOfTotalSales, "0%"));
+  const swiggyPercentString = String(getMetricValue(compareData?.swiggyPercentageOfTotalSales, "0%"));
 
-  let zomatoPercent = parsePercentageValue(zomatoPercentString);
-  let swiggyPercent = parsePercentageValue(swiggyPercentString);
+  const zomatoPercent = parsePercentageValue(zomatoPercentString);
+  const swiggyPercent = parsePercentageValue(swiggyPercentString);
 
   // Ensure chart renders even with no data
   const effectiveZomatoPercent = (zomatoPercent === 0 && swiggyPercent === 0) ? 1 : zomatoPercent;
-  const displayZomatoPercent = zomatoPercent; // keep original for label
-
-  const percentageChange = data?.percentageChangeFromLastMonth;
-  const isPositiveChange =
-    percentageChange != null && !String(percentageChange).startsWith("-");
 
   const chartData = [
     { name: "Zomato", value: effectiveZomatoPercent },
@@ -998,90 +1628,81 @@ function CompareGrossSaleCard({ data }: { data?: MonthwiseRef | null }) {
   const COLORS = ["#FF3054", "#E38827"];
 
   return (
-    <div className="rounded-2xl bg-[#F8F9FA] p-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-black">Gross Sale</span>
-        <span className="text-lg font-bold text-black">
-          ₹ {formatCurrencyAmount(totalSales)}
-        </span>
-      </div>
+    <div className="rounded-2xl border border-neutral-200/70 bg-[#FCFCFA] p-6 shadow-[0_8px_28px_rgba(15,23,42,0.04)]">
+      <div className="grid gap-7 lg:grid-cols-[310px_1fr] lg:items-center">
+        <div className="relative mx-auto flex h-72 w-72 items-center justify-center">
+          <div className="absolute inset-0 pointer-events-none">
+            <ResponsiveContainer width="100%" height="100%" className="[&_*]:outline-none">
+              <PieChart accessibilityLayer={false}>
+                <Pie
+                  data={chartData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={74}
+                  outerRadius={112}
+                  dataKey="value"
+                  startAngle={90}
+                  endAngle={-270}
+                  strokeWidth={0}
+                  isAnimationActive
+                  animationBegin={120}
+                  animationDuration={900}
+                  animationEasing="ease-out"
+                  className="bd-recharts-pie"
+                >
+                  {chartData.map((_, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
 
-      {/* Percentage change */}
-      {percentageChange != null && (
-        <div className={`mt-1 flex items-center text-xs font-semibold ${
-          isPositiveChange ? "text-green-600" : "text-red-500"
-        }`}>
-          {isPositiveChange
-            ? <ArrowUp size={14} className="mr-0.5" />
-            : <ArrowDown size={14} className="mr-0.5" />}
-          <span>{String(percentageChange)}</span>
-        </div>
-      )}
-
-      {/* Donut Chart */}
-      <div className="h-[200px] flex items-center justify-center mt-5 relative">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={chartData}
-              cx="50%"
-              cy="50%"
-              innerRadius={55}
-              outerRadius={85}
-              dataKey="value"
-              startAngle={90}
-              endAngle={-270}
-              strokeWidth={0}
-            >
-              {chartData.map((_, index) => (
-                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-              ))}
-            </Pie>
-          </PieChart>
-        </ResponsiveContainer>
-        {/* Center logos overlay */}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="flex gap-1">
-            <img
-              src="/assets/Zomato_logo.png"
-              alt="Zomato"
-              className="h-6 w-6 rounded-full object-contain border border-gray-200 bg-white"
-            />
-            <img
-              src="/assets/Swiggy_logo.png"
-              alt="Swiggy"
-              className="h-6 w-6 rounded-full object-contain border border-gray-200 bg-white"
-            />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="flex items-center justify-center -space-x-2 rounded-full bg-white/95 p-2 shadow-sm ring-1 ring-neutral-100">
+              <img
+                src="/assets/Zomato_logo.png"
+                alt="Zomato"
+                className="h-9 w-9 rounded-full object-contain border bg-white"
+                style={{ borderColor: "#FF3054" }}
+              />
+              <img
+                src="/assets/Swiggy_logo.png"
+                alt="Swiggy"
+                className="h-9 w-9 rounded-full object-contain border bg-white"
+                style={{ borderColor: "#E38827" }}
+              />
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Legend */}
-      <div className="mt-5 space-y-3">
-        {/* Zomato row */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="h-3 w-3 rounded-full flex-shrink-0" style={{ backgroundColor: "#FF3054" }} />
-            <span className="text-sm text-black font-normal">
-              Zomato ( {zomatoPercentString} )
+        <div className="min-w-0">
+          <div className="flex items-start justify-between gap-4 border-b border-neutral-100 pb-5">
+            <span className="text-xs font-semibold uppercase tracking-wider text-black/55">Gross Sale</span>
+            <span className="font-display text-3xl font-semibold leading-none text-black">
+              ₹ {formatCurrencyAmount(totalSales)}
             </span>
           </div>
-          <span className="text-sm font-semibold text-black">
-            ₹ {formatCurrencyAmount(zomatoSales)}
-          </span>
-        </div>
-        {/* Swiggy row */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="h-3 w-3 rounded-full flex-shrink-0" style={{ backgroundColor: "#E38827" }} />
-            <span className="text-sm text-black font-normal">
-              Swiggy ( {swiggyPercentString} )
-            </span>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-lg border border-neutral-100 bg-white px-4 py-3 shadow-[0_2px_10px_rgba(15,23,42,0.025)]">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: "#FF3054" }} />
+                <span className="text-sm font-medium text-black/70">Zomato</span>
+              </div>
+              <p className="mt-2 text-lg font-semibold text-black">₹ {formatCurrencyAmount(zomatoSales)}</p>
+              <p className="mt-1 text-xs font-medium text-black/50">{zomatoPercentString}</p>
+            </div>
+
+            <div className="rounded-lg border border-neutral-100 bg-white px-4 py-3 shadow-[0_2px_10px_rgba(15,23,42,0.025)]">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: "#E38827" }} />
+                <span className="text-sm font-medium text-black/70">Swiggy</span>
+              </div>
+              <p className="mt-2 text-lg font-semibold text-black">₹ {formatCurrencyAmount(swiggySales)}</p>
+              <p className="mt-1 text-xs font-medium text-black/50">{swiggyPercentString}</p>
+            </div>
           </div>
-          <span className="text-sm font-semibold text-black">
-            ₹ {formatCurrencyAmount(swiggySales)}
-          </span>
         </div>
       </div>
     </div>
@@ -1099,7 +1720,11 @@ function CompareTable({
   monthwiseReferenceReports?: MonthwiseRef[];
 }) {
   if (!reference?.compare?.percentages || reference.compare.percentages.length === 0) {
-    return null;
+    return (
+      <div className="rounded-xl border border-bd-border bg-white p-4 text-center text-xs font-semibold text-black">
+        No comparison data available.
+      </div>
+    );
   }
 
   const isZomato = aggregator?.toLowerCase() === "zomato";
@@ -1137,48 +1762,59 @@ function CompareTable({
     const currentSales = forZomato ? current.compare?.zomatoSales : current.compare?.swiggySales;
     const prevSales = forZomato ? prevReport.compare?.zomatoSales : prevReport.compare?.swiggySales;
 
-    if (currentSales == null || prevSales == null || prevSales === 0) return null;
-    const change = ((currentSales - prevSales) / prevSales) * 100;
+    const currentSalesValue = toFiniteNumber(currentSales, NaN);
+    const prevSalesValue = toFiniteNumber(prevSales, NaN);
+    if (!Number.isFinite(currentSalesValue) || !Number.isFinite(prevSalesValue) || prevSalesValue === 0) return null;
+    const change = ((currentSalesValue - prevSalesValue) / prevSalesValue) * 100;
     return `${change.toFixed(2)}%`;
+  }
+
+  function formatComparisonValue(value: unknown, fallback = "0.00%"): string {
+    if (!hasMetricValue(value)) return fallback;
+    return String(value);
   }
 
   function buildRow(
     label: string,
-    zomato: string,
-    swiggy: string,
+    zomato: unknown,
+    swiggy: unknown,
+    rowKey: string,
   ) {
-    const head = label.toLowerCase().trim();
+    const safeLabel = label.trim() || "Metric";
+    const zomatoValue = formatComparisonValue(zomato);
+    const swiggyValue = formatComparisonValue(swiggy);
+    const head = safeLabel.toLowerCase().trim();
     const isSpecialHead =
       head.includes("profit") ||
       (head.includes("percentage change") && head.includes("last month"));
 
-    const isZomatoNegative = isSpecialHead && zomato.trim().startsWith("-");
-    const isSwiggyNegative = isSpecialHead && swiggy.trim().startsWith("-");
+    const isZomatoNegative = isSpecialHead && zomatoValue.trim().startsWith("-");
+    const isSwiggyNegative = isSpecialHead && swiggyValue.trim().startsWith("-");
 
     return (
-      <div key={label} className="contents">
+      <div key={rowKey} className="contents">
         {/* Label cell */}
-        <div className="my-1 rounded-lg bg-[#E9FBF0] px-3 py-3">
-          <span className="text-[13px] font-medium leading-snug line-clamp-2">{label}</span>
+        <div className="my-1 rounded-lg border border-neutral-100 bg-white px-3 py-3 shadow-[0_2px_10px_rgba(15,23,42,0.025)]">
+          <span className="text-[13px] font-medium leading-snug line-clamp-2 text-black/70">{safeLabel}</span>
         </div>
         {/* Zomato value cell */}
         {(isZomato || isCompare) && (
           <div className={`my-1 mx-1 rounded-lg px-3 py-3 flex items-center justify-center ${
-            isZomatoNegative ? "bg-[#FDE8E8]" : "bg-[#E9FBF0]"
+            isZomatoNegative ? "border border-red-100 bg-red-50" : "border border-neutral-100 bg-white"
           }`}>
             <span className={`text-[13px] font-bold text-center ${
-              isZomatoNegative ? "text-[#C81E1E]" : "text-[#006736]"
-            }`}>{zomato}</span>
+              isZomatoNegative ? "text-[#C81E1E]" : "text-black/75"
+            }`}>{zomatoValue}</span>
           </div>
         )}
         {/* Swiggy value cell */}
         {(isSwiggy || isCompare) && (
           <div className={`my-1 mx-1 rounded-lg px-3 py-3 flex items-center justify-center ${
-            isSwiggyNegative ? "bg-[#FDE8E8]" : "bg-[#E9FBF0]"
+            isSwiggyNegative ? "border border-red-100 bg-red-50" : "border border-neutral-100 bg-white"
           }`}>
             <span className={`text-[13px] font-bold text-center ${
-              isSwiggyNegative ? "text-[#C81E1E]" : "text-[#006736]"
-            }`}>{swiggy}</span>
+              isSwiggyNegative ? "text-[#C81E1E]" : "text-black/75"
+            }`}>{swiggyValue}</span>
           </div>
         )}
       </div>
@@ -1193,36 +1829,37 @@ function CompareTable({
     : "grid-cols-1";
 
   return (
-    <div className={`rounded-xl bg-[#F2F2F2] p-4 mt-5`}>
+    <div className="mt-5 rounded-2xl border border-neutral-200/70 bg-[#FCFCFA] p-4 shadow-[0_8px_28px_rgba(15,23,42,0.04)]">
       <div className={`grid ${gridClass} gap-x-1`}>
         {/* Header row */}
         <div />
         {(isZomato || isCompare) && (
           <div className="flex justify-center py-2">
-            <img src="/assets/Zomato_logo.png" alt="Zomato" className="h-10 w-10 rounded-full object-contain border border-gray-200 bg-white" />
+            <img src="/assets/Zomato_logo.png" alt="Zomato" className="h-10 w-10 rounded-full object-contain border border-neutral-100 bg-white shadow-sm" />
           </div>
         )}
         {(isSwiggy || isCompare) && (
           <div className="flex justify-center py-2">
-            <img src="/assets/Swiggy_logo.png" alt="Swiggy" className="h-10 w-10 rounded-full object-contain border border-gray-200 bg-white" />
+            <img src="/assets/Swiggy_logo.png" alt="Swiggy" className="h-10 w-10 rounded-full object-contain border border-neutral-100 bg-white shadow-sm" />
           </div>
         )}
 
         {/* Data rows */}
-        {reference.compare!.percentages!.map((e) => {
-          let zomatoVal = e.zomato ?? "0.00%";
-          let swiggyVal = e.swiggy ?? "0.00%";
+        {reference.compare.percentages.map((e, index) => {
+          const entry = e || {};
+          let zomatoVal = formatComparisonValue(entry.zomato);
+          let swiggyVal = formatComparisonValue(entry.swiggy);
 
-          const head = e.head?.toLowerCase() ?? "";
+          const head = entry.head?.toLowerCase() ?? "";
           if (head.includes("percentage change") && head.includes("last month")) {
-            if (!e.zomato || e.zomato === "0.00%" || e.zomato === "0" || e.zomato === "null") {
+            if (!hasMetricValue(entry.zomato) || entry.zomato === "0.00%" || entry.zomato === "0") {
               if (!isCompare && isZomato) {
                 zomatoVal = String(reference.percentageChangeFromLastMonth ?? zomatoVal);
               } else if (isCompare) {
                 zomatoVal = calculatePercentageChange(monthwiseReferenceReports, reference, true) ?? zomatoVal;
               }
             }
-            if (!e.swiggy || e.swiggy === "0.00%" || e.swiggy === "0" || e.swiggy === "null") {
+            if (!hasMetricValue(entry.swiggy) || entry.swiggy === "0.00%" || entry.swiggy === "0") {
               if (!isCompare && isSwiggy) {
                 swiggyVal = String(reference.percentageChangeFromLastMonth ?? swiggyVal);
               } else if (isCompare) {
@@ -1231,7 +1868,7 @@ function CompareTable({
             }
           }
 
-          return buildRow(e.head ?? "", zomatoVal, swiggyVal);
+          return buildRow(entry.head ?? "", zomatoVal, swiggyVal, `${entry.head || "metric"}-${index}`);
         })}
       </div>
     </div>
@@ -1244,12 +1881,14 @@ function SoaAnalyser({
   selectedAnalysisId: externalSelectedAnalysisId,
   onSelectedAnalysisIdChange,
   onMonthOptionsChange,
+  onSalesAnalyticsViewChange,
 }: {
   selectedRestaurant: Restaurant | null;
   onLatestAnalyticsLabel?: (label: string) => void;
   selectedAnalysisId?: string;
   onSelectedAnalysisIdChange?: (value: string) => void;
   onMonthOptionsChange?: (options: SoaMonthOption[]) => void;
+  onSalesAnalyticsViewChange?: (isOpen: boolean) => void;
 }) {
   const [analyses, setAnalyses] = useState<AnalysisReport[]>([]);
   const [monthwiseRef, setMonthwiseRef] = useState<MonthwiseRef[]>([]);
@@ -1260,14 +1899,30 @@ function SoaAnalyser({
   const [isCompareMode, setIsCompareMode] = useState<boolean>(false);
   const [details, setDetails] = useState<Partial<AnalysisReport> | null>(null);
   const [detailsLoading, setDetailsLoading] = useState<boolean>(false);
+  const [showSalesAnalytics, setShowSalesAnalytics] = useState(false);
+  const [salesAnalyticsReferences, setSalesAnalyticsReferences] = useState<MonthwiseRef[]>([]);
+  const [salesAnalyticsLoading, setSalesAnalyticsLoading] = useState(false);
+  const [salesAnalyticsError, setSalesAnalyticsError] = useState("");
+  const selectedAnalysisIdRef = useRef(selectedAnalysisId);
 
   const setSelectedAnalysisId = useCallback((value: string) => {
+    if (value === selectedAnalysisIdRef.current) return;
+    selectedAnalysisIdRef.current = value;
+    setDetails(null);
+    setDetailsLoading(Boolean(value));
     setInternalSelectedAnalysisId(value);
     onSelectedAnalysisIdChange?.(value);
   }, [onSelectedAnalysisIdChange]);
 
   useEffect(() => {
+    selectedAnalysisIdRef.current = selectedAnalysisId;
+  }, [selectedAnalysisId]);
+
+  useEffect(() => {
     if (externalSelectedAnalysisId !== undefined && externalSelectedAnalysisId !== selectedAnalysisId) {
+      selectedAnalysisIdRef.current = externalSelectedAnalysisId;
+      setDetails(null);
+      setDetailsLoading(Boolean(externalSelectedAnalysisId));
       setInternalSelectedAnalysisId(externalSelectedAnalysisId);
     }
   }, [externalSelectedAnalysisId, selectedAnalysisId]);
@@ -1281,9 +1936,14 @@ function SoaAnalyser({
       setAnalyses([]);
       setMonthwiseRef([]);
       setOverallSales({});
+      setDetails(null);
+      setDetailsLoading(false);
       setSelectedAnalysisId("");
       onLatestAnalyticsLabel?.("Latest Analytics");
       onMonthOptionsChange?.([]);
+      setShowSalesAnalytics(false);
+      onSalesAnalyticsViewChange?.(false);
+      setSalesAnalyticsReferences([]);
       return;
     }
 
@@ -1319,11 +1979,14 @@ function SoaAnalyser({
           const activeId = String(firstReport.id);
           setSelectedAnalysisId(activeId);
         } else {
-          loadMockData();
+          setDetails(null);
+          setDetailsLoading(false);
+          setSelectedAnalysisId("");
+          onMonthOptionsChange?.([]);
         }
       } catch (error) {
         if (!activeRequest) return;
-        console.warn("Using mock analysis data:", getApiErrorMessage(error, "Analysis data is not available."));
+        logApiIssue("warn", "Using mock analysis data", error, "Analysis data is not available.");
         loadMockData();
       } finally {
         if (activeRequest) setLoading(false);
@@ -1343,17 +2006,23 @@ function SoaAnalyser({
     return () => {
       activeRequest = false;
     };
-  }, [onLatestAnalyticsLabel, onMonthOptionsChange, selectedRestaurant?.id, setSelectedAnalysisId]);
+  }, [onLatestAnalyticsLabel, onMonthOptionsChange, onSalesAnalyticsViewChange, selectedRestaurant?.id, setSelectedAnalysisId]);
 
   useEffect(() => {
     if (monthwiseRef.length === 0) return;
-    onMonthOptionsChange?.(monthwiseRef.map((reference) => ({
+    const options = monthwiseRef.map((reference) => ({
       value: getAnalysisIdForAggregator(reference, aggregator),
       label: getMonthOptionLabel(reference),
-    })).filter((option) => option.value));
-    const activeId = getAnalysisIdForAggregator(monthwiseRef[0], aggregator);
+    })).filter((option) => option.value);
+    onMonthOptionsChange?.(options);
+
+    const selectedMonthReference = monthwiseRef.find((reference) => {
+      return (reference.zomatoAnalysis != null && String(reference.zomatoAnalysis) === selectedAnalysisId)
+        || (reference.swiggyAnalysis != null && String(reference.swiggyAnalysis) === selectedAnalysisId);
+    });
+    const activeId = getAnalysisIdForAggregator(selectedMonthReference, aggregator) || options[0]?.value || "";
     if (activeId) setSelectedAnalysisId(activeId);
-  }, [aggregator, monthwiseRef, onMonthOptionsChange, setSelectedAnalysisId]);
+  }, [aggregator, monthwiseRef, onMonthOptionsChange, selectedAnalysisId, setSelectedAnalysisId]);
 
   useEffect(() => {
     if (!selectedAnalysisId) {
@@ -1372,7 +2041,7 @@ function SoaAnalyser({
         setDetails(reportDetails);
       } catch (error) {
         if (!activeRequest) return;
-        console.warn("Details fetching failed:", error);
+        logApiIssue("warn", "Details fetching failed", error, "Analysis details are not available.");
         loadMockDetails();
       } finally {
         if (activeRequest) setDetailsLoading(false);
@@ -1393,8 +2062,8 @@ function SoaAnalyser({
   const getNumberOfOrdersData = (totalOrdersNode: TemplateNode) => {
     const components: Record<string, unknown>[] = [];
     const addIfNotNull = (key: string, value: unknown) => {
-      if (value != null) {
-        components.push({ [key]: value });
+      if (hasMetricValue(value)) {
+        components.push({ [key]: getMetricValue(value) });
       }
     };
 
@@ -1410,8 +2079,8 @@ function SoaAnalyser({
   const getGrossSalesData = (grossSalesNode: TemplateNode) => {
     const components: Record<string, unknown>[] = [];
     const addIfNotNull = (key: string, value: unknown) => {
-      if (value != null) {
-        components.push({ [key]: value });
+      if (hasMetricValue(value)) {
+        components.push({ [key]: getMetricValue(value) });
       }
     };
 
@@ -1431,7 +2100,7 @@ function SoaAnalyser({
     const buildSplitups = (items: Record<string, unknown>) => {
       const map: Record<string, unknown> = {};
       Object.entries(items).forEach(([key, value]) => {
-        if (value != null) map[key] = value;
+        if (hasMetricValue(value)) map[key] = getMetricValue(value);
       });
       return Object.keys(map).length === 0 ? null : map;
     };
@@ -1451,19 +2120,19 @@ function SoaAnalyser({
       "Discount on service fee due to 30% capping": (serviceFee.discount_on_service_fee_due_to_capping_30 as TemplateNode | undefined)?.value,
     }) : null;
 
-    if (serviceFee?.value != null || serviceFeeSplitups) {
+    if (hasMetricValue(serviceFee?.value) || serviceFeeSplitups) {
       components.push({
-        "Service Fee": serviceFee?.value,
+        "Service Fee": getMetricValue(serviceFee?.value),
         ...(serviceFeeSplitups ? { splitups: [serviceFeeSplitups] } : {}),
       });
     }
 
-    if (taxesOnServiceFee?.value != null) {
-      components.push({ "Taxes on Service Fee": taxesOnServiceFee.value });
+    if (hasMetricValue(taxesOnServiceFee?.value)) {
+      components.push({ "Taxes on Service Fee": getMetricValue(taxesOnServiceFee?.value) });
     }
 
-    if (discounts?.value != null) {
-      components.push({ "Discounts": discounts.value });
+    if (hasMetricValue(discounts?.value)) {
+      components.push({ "Discounts": getMetricValue(discounts?.value) });
     }
 
     const otherDeductionsSplitups = otherOrderLevelDeductions ? buildSplitups({
@@ -1479,9 +2148,9 @@ function SoaAnalyser({
       "Adjustments from previous period": (otherOrderLevelDeductions.adjustments_from_previous_period as TemplateNode | undefined)?.value,
     }) : null;
 
-    if (otherOrderLevelDeductions?.value != null || otherDeductionsSplitups) {
+    if (hasMetricValue(otherOrderLevelDeductions?.value) || otherDeductionsSplitups) {
       components.push({
-        "Other order level deductions": otherOrderLevelDeductions?.value,
+        "Other order level deductions": getMetricValue(otherOrderLevelDeductions?.value),
         ...(otherDeductionsSplitups ? { splitups: [otherDeductionsSplitups] } : {}),
       });
     }
@@ -1492,9 +2161,9 @@ function SoaAnalyser({
       "Other growth services": (advertisements.other_growth_services as TemplateNode | undefined)?.value ?? "0.0",
     }) : null;
 
-    if (advertisements?.value != null || adsSplitups) {
+    if (hasMetricValue(advertisements?.value) || adsSplitups) {
       components.push({
-        "Advertisement": advertisements?.value,
+        "Advertisement": getMetricValue(advertisements?.value),
         ...(adsSplitups ? { splitups: [adsSplitups] } : {}),
       });
     }
@@ -1505,9 +2174,9 @@ function SoaAnalyser({
       [`5% GST collected & paid by ${aggregatorName}`]: (additionalTaxDeductions.gst_paid_by_aggregator as TemplateNode | undefined)?.value,
     }) : null;
 
-    if (additionalTaxDeductions?.value != null || addTaxSplitups) {
+    if (hasMetricValue(additionalTaxDeductions?.value) || addTaxSplitups) {
       components.push({
-        "Additional Tax Deductions": additionalTaxDeductions?.value,
+        "Additional Tax Deductions": getMetricValue(additionalTaxDeductions?.value),
         ...(addTaxSplitups ? { splitups: [addTaxSplitups] } : {}),
       });
     }
@@ -1520,7 +2189,7 @@ function SoaAnalyser({
     const buildSplitups = (items: Record<string, unknown>) => {
       const map: Record<string, unknown> = {};
       Object.entries(items).forEach(([key, value]) => {
-        if (value != null) map[key] = value;
+        if (hasMetricValue(value)) map[key] = getMetricValue(value);
       });
       return Object.keys(map).length === 0 ? null : map;
     };
@@ -1532,8 +2201,8 @@ function SoaAnalyser({
     const otherAdditions = netAdditionsNode.other_additions as TemplateNode | undefined;
 
     const addIfNotNull = (key: string, value: unknown) => {
-      if (value != null) {
-        components.push({ [key]: value });
+      if (hasMetricValue(value)) {
+        components.push({ [key]: getMetricValue(value) });
       }
     };
 
@@ -1547,9 +2216,9 @@ function SoaAnalyser({
       "Brand pack subscription fee": (otherAdditions.brand_pack_subscription_fee as TemplateNode | undefined)?.value,
     }) : null;
 
-    if (otherAdditions?.value != null || splitups) {
+    if (hasMetricValue(otherAdditions?.value) || splitups) {
       components.push({
-        "Others Additions": otherAdditions?.value,
+        "Others Additions": getMetricValue(otherAdditions?.value),
         ...(splitups ? { splitups: [splitups] } : {}),
       });
     }
@@ -1560,8 +2229,8 @@ function SoaAnalyser({
   const getNetPayoutData = (netPayoutNode: TemplateNode) => {
     const components: Record<string, unknown>[] = [];
     const addIfNotNull = (key: string, value: unknown) => {
-      if (value != null) {
-        components.push({ [key]: value });
+      if (hasMetricValue(value)) {
+        components.push({ [key]: getMetricValue(value) });
       }
     };
 
@@ -1577,8 +2246,8 @@ function SoaAnalyser({
   const getCommissionableValueData = (commissionableNode: TemplateNode) => {
     const components: Record<string, unknown>[] = [];
     const addIfNotNull = (key: string, value: unknown) => {
-      if (value != null) {
-        components.push({ [key]: value });
+      if (hasMetricValue(value)) {
+        components.push({ [key]: getMetricValue(value) });
       }
     };
 
@@ -1611,15 +2280,66 @@ function SoaAnalyser({
   const hasSelectedSwiggyAnalysis = selectedMonthReference?.swiggyAnalysis != null;
   const hasSelectedZomatoAnalysis = selectedMonthReference?.zomatoAnalysis != null;
 
-  const payoutData = details?.calculatedTemplate;
-  const numberOfOrders = payoutData?.total_orders as TemplateNode | undefined;
-  const grossSales = payoutData?.gross_sales as TemplateNode | undefined;
-  const commissionableValue = payoutData?.total_commisionable_value as TemplateNode | undefined;
-  const netDeductions = payoutData?.net_deductions as TemplateNode | undefined;
-  const netAdditions = payoutData?.net_additions as TemplateNode | undefined;
-  const netPayout = payoutData?.net_payout as TemplateNode | undefined;
+  const payoutData = getSafeCalculatedTemplate(details);
+  const numberOfOrders = getTemplateNode(payoutData, "total_orders");
+  const grossSales = getTemplateNode(payoutData, "gross_sales");
+  const commissionableValue = getTemplateNode(payoutData, "total_commisionable_value");
+  const netDeductions = getTemplateNode(payoutData, "net_deductions");
+  const netAdditions = getTemplateNode(payoutData, "net_additions");
+  const netPayout = getTemplateNode(payoutData, "net_payout");
+  const numberOfOrdersData = numberOfOrders ? getNumberOfOrdersData(numberOfOrders) : { components: [] };
+  const grossSalesData = grossSales ? getGrossSalesData(grossSales) : { components: [] };
+  const commissionableValueData = commissionableValue ? getCommissionableValueData(commissionableValue) : { components: [] };
+  const netDeductionsData = netDeductions ? getNetDeductionsData(netDeductions, aggregator === "swiggy" ? "Swiggy" : "Zomato") : { components: [] };
+  const netAdditionsData = netAdditions ? getNetAdditionsData(netAdditions) : { components: [] };
+  const netPayoutData = netPayout ? getNetPayoutData(netPayout) : { components: [] };
+  const hasNumberOfOrdersData = hasTileData(numberOfOrders, numberOfOrdersData);
+  const hasGrossSalesData = hasTileData(grossSales, grossSalesData);
+  const hasCommissionableValueData = hasTileData(commissionableValue, commissionableValueData);
+  const hasNetDeductionsData = hasTileData(netDeductions, netDeductionsData);
+  const hasNetAdditionsData = hasTileData(netAdditions, netAdditionsData);
+  const hasNetPayoutData = hasTileData(netPayout, netPayoutData);
+  const hasDetailSections = hasNumberOfOrdersData || hasGrossSalesData || hasCommissionableValueData || hasNetDeductionsData || hasNetAdditionsData || hasNetPayoutData;
+  const waitingForDetails = Boolean(selectedAnalysisId) && !isCompareMode && (detailsLoading || details === null);
+  const salesAnalyticsProfitReference = salesAnalyticsReferences.find((reference) => (
+    reference.year === selectedMonthReference?.year
+    && getReportMonthNumber(reference.month) === getReportMonthNumber(selectedMonthReference?.month)
+  )) || salesAnalyticsReferences[0];
 
-  if (loading) {
+  const openSalesAnalytics = async () => {
+    if (!selectedRestaurant?.id || !selectedMonthReference?.year) return;
+
+    setShowSalesAnalytics(true);
+    onSalesAnalyticsViewChange?.(true);
+    setSalesAnalyticsLoading(true);
+    setSalesAnalyticsError("");
+    setSalesAnalyticsReferences([]);
+
+    try {
+      const { data } = await axios.get("/v1/analysis", {
+        timeout: 8000,
+        params: {
+          restaurant_id: selectedRestaurant.id,
+          aggregator,
+          year: selectedMonthReference.year,
+          compare_info: true,
+        },
+      });
+      const references = data?.data?.monthwiseReference
+        || data?.monthwiseReference
+        || data?.data?.monthwiseReferenceReports
+        || data?.monthwiseReferenceReports
+        || [];
+      setSalesAnalyticsReferences(Array.isArray(references) ? references : [references]);
+    } catch (error) {
+      logApiIssue("warn", "Sales analytics fetching failed", error, "Sales analytics are not available.");
+      setSalesAnalyticsError(getApiErrorMessage(error, "Unable to load sales analytics."));
+    } finally {
+      setSalesAnalyticsLoading(false);
+    }
+  };
+
+  if (loading || waitingForDetails) {
     return (
       <div className="flex h-64 items-center justify-center" data-testid="soa-decode">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
@@ -1627,7 +2347,7 @@ function SoaAnalyser({
     );
   }
 
-  if (!loading && analyses.length === 0) {
+  if (!loading && analyses.length === 0 && monthwiseRef.length === 0) {
     return (
       <div className="rounded-3xl border border-dashed border-bd-border p-12 text-center" data-testid="soa-decode">
         <p className="font-display text-lg font-extrabold text-bd-tealDeep">No reports available</p>
@@ -1636,23 +2356,103 @@ function SoaAnalyser({
     );
   }
 
+  if (showSalesAnalytics) {
+    return (
+      <div className="space-y-6 text-black" data-testid="sales-analytics">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="font-display text-3xl font-black text-bd-tealDeep">Sales Analytics</h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setShowSalesAnalytics(false);
+              onSalesAnalyticsViewChange?.(false);
+            }}
+            className="inline-flex items-center gap-2 rounded-xl border border-bd-border bg-white px-4 py-2.5 text-sm font-bold text-bd-tealDeep transition hover:border-bd-teal"
+          >
+            <ChevronLeft size={16} /> Back to Financial Analyser
+          </button>
+        </div>
+
+        <section className="flex items-center justify-between gap-4 rounded-2xl border border-bd-border bg-white px-5 py-4 shadow-sm sm:px-6">
+          <div className="flex items-center gap-3">
+            <span className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-xl border border-neutral-100 bg-white shadow-sm">
+              <img
+                src={aggregator === "swiggy" ? "/assets/Swiggy_logo.png" : "/assets/Zomato_logo.png"}
+                alt={aggregator === "swiggy" ? "Swiggy" : "Zomato"}
+                className={aggregator === "swiggy" ? "h-[82%] w-[82%] object-contain" : "h-full w-full object-contain"}
+              />
+            </span>
+            <div>
+              <p className="font-display text-lg font-black text-bd-tealDeep">
+                {aggregator === "swiggy" ? "Swiggy" : "Zomato"}
+              </p>
+            </div>
+          </div>
+          <div className="min-w-0 text-right">
+            <p className="truncate font-display text-lg font-black text-bd-tealDeep">
+              {selectedRestaurant?.name || "Restaurant"}
+            </p>
+          </div>
+        </section>
+
+        {salesAnalyticsLoading ? (
+          <div className="flex h-48 items-center justify-center rounded-2xl border border-bd-border bg-white">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
+          </div>
+        ) : salesAnalyticsError ? (
+          <div className="rounded-2xl border border-red-100 bg-red-50 p-6 text-sm font-semibold text-red-700">
+            {salesAnalyticsError}
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <ProfitLossIndicator
+              reference={salesAnalyticsProfitReference}
+              aggregator={aggregator}
+              showRecommendationsButton={false}
+              notesTitle="Suggestions"
+            />
+            <SalesAnalyticsChart monthwiseReferenceReports={salesAnalyticsReferences} />
+            <ProfitPercentageChart
+              monthwiseReferenceReports={salesAnalyticsReferences}
+              aggregator={aggregator}
+            />
+            <NetDeductionPercentageChart
+              monthwiseReferenceReports={salesAnalyticsReferences}
+              aggregator={aggregator}
+            />
+            <AdsDeductionPercentageChart
+              monthwiseReferenceReports={salesAnalyticsReferences}
+              aggregator={aggregator}
+            />
+            <DiscountBurnPercentageChart
+              monthwiseReferenceReports={salesAnalyticsReferences}
+              aggregator={aggregator}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div data-testid="soa-decode" className="space-y-6">
-      <section className="rounded-2xl border border-bd-border bg-white p-3 shadow-sm">
-        <div className="mb-3 flex items-center justify-center">
-          <div className="flex items-center justify-center gap-2.5">
-            <h3 className="font-display text-sm font-bold text-bd-tealDeep">Overall Analytics</h3>
+    <div data-testid="soa-decode" className="space-y-6 text-black [&_*]:text-black">
+      <section className="rounded-2xl border border-emerald-100 bg-emerald-50/70 p-5 shadow-sm sm:p-6">
+        <div className="mb-5 flex items-center justify-center">
+          <div className="flex items-center justify-center gap-3">
+            <h3 className="font-display text-xl font-black leading-tight sm:text-2xl">Overall Analytics</h3>
             {overallAnalyticsLogos.length > 0 && (
-              <div className="relative h-8 w-10">
+              <div className="relative h-11 w-14 shrink-0">
                 {hasSelectedSwiggyAnalysis && (
-                  <span className="absolute bottom-0 left-0 flex h-5 w-5 items-center justify-center overflow-hidden rounded-full border border-bd-border bg-white shadow-sm">
+                  <span className="absolute bottom-0 left-0 flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-emerald-100 bg-white shadow-sm">
                     <img src="/assets/Swiggy_logo.png" alt="Swiggy" className="h-[82%] w-[82%] object-contain" />
                   </span>
                 )}
                 {hasSelectedZomatoAnalysis && (
                   <span
-                    className="absolute top-0 flex h-5 w-5 items-center justify-center overflow-hidden rounded-full border border-bd-border bg-white shadow-sm"
-                    style={{ left: hasSelectedSwiggyAnalysis ? 12 : 2 }}
+                    className="absolute top-0 flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-emerald-100 bg-white shadow-sm"
+                    style={{ left: hasSelectedSwiggyAnalysis ? 22 : 4 }}
                   >
                     <img src="/assets/Zomato_logo.png" alt="Zomato" className="h-full w-full object-contain" />
                   </span>
@@ -1661,22 +2461,22 @@ function SoaAnalyser({
             )}
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-2">
-          <div className="rounded-lg border border-bd-border bg-bd-section px-3 py-2.5">
-            <p className="overline text-[9px] text-bd-inkSoft">Gross Sales</p>
-            <p className="mt-0.5 font-display text-lg font-black text-bd-tealDeep">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="min-h-28 rounded-xl border border-white/80 bg-white/85 px-4 py-4 shadow-sm">
+            <p className="overline text-[10px] text-black/65">Gross Sales</p>
+            <p className="mt-2 font-display text-2xl font-black leading-none sm:text-3xl">
               ₹ {formatCompactAmount(overallSales.grossSales)}
             </p>
           </div>
-          <div className="rounded-lg border border-bd-border bg-bd-section px-3 py-2.5">
-            <p className="overline text-[9px] text-bd-inkSoft">Deductions</p>
-            <p className="mt-0.5 font-display text-lg font-black text-bd-tealDeep">
+          <div className="min-h-28 rounded-xl border border-white/80 bg-white/85 px-4 py-4 shadow-sm">
+            <p className="overline text-[10px] text-black/65">Deductions</p>
+            <p className="mt-2 font-display text-2xl font-black leading-none sm:text-3xl">
               ₹ {formatCompactAmount(overallSales.netDeductions)}
             </p>
           </div>
-          <div className="rounded-lg border border-bd-mint bg-bd-mint px-3 py-2.5">
-            <p className="overline text-[9px] text-bd-tealDeep/70">Net Payout</p>
-            <p className="mt-0.5 font-display text-lg font-black text-bd-tealDeep">
+          <div className="min-h-28 rounded-xl border border-emerald-200 bg-white px-4 py-4 shadow-md">
+            <p className="overline text-[10px] text-black/65">Net Payout</p>
+            <p className="mt-2 font-display text-2xl font-black leading-none sm:text-3xl">
               ₹ {formatCompactAmount(overallSales.netPayable)}
             </p>
           </div>
@@ -1688,8 +2488,8 @@ function SoaAnalyser({
           type="button"
           onClick={() => { setAggregator("swiggy"); setIsCompareMode(false); }}
           className={`flex h-12 min-w-40 items-center justify-center gap-2.5 rounded-full border px-4 text-xs font-bold transition duration-200 ${aggregator === "swiggy" && !isCompareMode
-              ? "border-bd-tealDeep bg-bd-tealDeep text-white shadow-sm"
-              : "border-bd-border bg-white text-bd-tealDeep hover:border-bd-teal"
+              ? "border-black bg-neutral-100 text-black shadow-sm"
+              : "border-bd-border bg-white text-black hover:border-black"
             }`}
           aria-label="Show Swiggy analytics"
         >
@@ -1702,8 +2502,8 @@ function SoaAnalyser({
           type="button"
           onClick={() => { setAggregator("zomato"); setIsCompareMode(false); }}
           className={`flex h-12 min-w-40 items-center justify-center gap-2.5 rounded-full border px-4 text-xs font-bold transition duration-200 ${aggregator === "zomato" && !isCompareMode
-              ? "border-bd-tealDeep bg-bd-tealDeep text-white shadow-sm"
-              : "border-bd-border bg-white text-bd-tealDeep hover:border-bd-teal"
+              ? "border-black bg-neutral-100 text-black shadow-sm"
+              : "border-bd-border bg-white text-black hover:border-black"
             }`}
           aria-label="Show Zomato analytics"
         >
@@ -1716,8 +2516,8 @@ function SoaAnalyser({
           type="button"
           onClick={() => setIsCompareMode((prev) => !prev)}
           className={`flex h-12 min-w-40 items-center justify-center rounded-full border px-4 text-xs font-bold transition duration-200 ${isCompareMode
-            ? "border-bd-tealDeep bg-bd-tealDeep text-white shadow-sm"
-            : "border-bd-border bg-white text-bd-tealDeep hover:border-bd-teal"
+            ? "border-black bg-neutral-100 text-black shadow-sm"
+            : "border-bd-border bg-white text-black hover:border-black"
           }`}
           aria-label="Compare Zomato and Swiggy analytics"
         >
@@ -1726,13 +2526,11 @@ function SoaAnalyser({
       </div>
 
       {!isCompareMode && (
-        <ProfitLossIndicator reference={selectedMonthReference} aggregator={aggregator} />
-      )}
-
-      {detailsLoading && (
-        <div className="flex h-20 items-center justify-center">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
-        </div>
+        <ProfitLossIndicator
+          reference={selectedMonthReference}
+          aggregator={aggregator}
+          onSeeAllRecommendations={openSalesAnalytics}
+        />
       )}
 
       {isCompareMode && selectedMonthReference?.compare && (
@@ -1746,66 +2544,71 @@ function SoaAnalyser({
         </div>
       )}
 
-      {!detailsLoading && !isCompareMode && (numberOfOrders || grossSales || commissionableValue || netDeductions || netAdditions || netPayout) && (
+      {!isCompareMode && hasDetailSections && (
         <div className="space-y-5">
-          {numberOfOrders && (
+          {hasNumberOfOrdersData && (
             <ExpandableTiles
               title="Total Number of Orders"
-              totalAmount={String(numberOfOrders.value ?? 0)}
-              data={getNumberOfOrdersData(numberOfOrders)}
+              totalAmount={String(getMetricValue(numberOfOrders?.value))}
+              data={numberOfOrdersData}
               showRupeeIcon={false}
+              size="wide"
             />
           )}
 
-          {grossSales && (
+          {hasGrossSalesData && (
             <ExpandableTiles
               title="Gross Sales"
-              totalAmount={String(grossSales.value ?? 0)}
-              data={getGrossSalesData(grossSales)}
+              totalAmount={String(getMetricValue(grossSales?.value))}
+              data={grossSalesData}
               showRupeeIcon={true}
               showPieChart={true}
+              size="chartWide"
             />
           )}
 
-          {commissionableValue && (
+          {hasCommissionableValueData && (
             <ExpandableTiles
               title="Commissionable Value"
-              totalAmount={String(commissionableValue.value ?? 0)}
-              data={getCommissionableValueData(commissionableValue)}
+              totalAmount={String(getMetricValue(commissionableValue?.value))}
+              data={commissionableValueData}
               showRupeeIcon={true}
               showPieChart={true}
               pieColors={commissionablePieColors}
-              noNeedtoShowDots={true}
+              size="chartWide"
             />
           )}
 
-          {netDeductions && (
+          {hasNetDeductionsData && (
             <ExpandableTiles
               title="Net Deductions"
-              totalAmount={String(netDeductions.value ?? 0)}
-              data={getNetDeductionsData(netDeductions, aggregator === "swiggy" ? "Swiggy" : "Zomato")}
+              totalAmount={String(getMetricValue(netDeductions?.value))}
+              data={netDeductionsData}
               showRupeeIcon={true}
               showPieChart={true}
+              size="chartWide"
             />
           )}
 
-          {netAdditions && (
+          {hasNetAdditionsData && (
             <ExpandableTiles
               title="Net Additions"
-              totalAmount={String(netAdditions.value ?? 0)}
-              data={getNetAdditionsData(netAdditions)}
+              totalAmount={String(getMetricValue(netAdditions?.value))}
+              data={netAdditionsData}
               showRupeeIcon={true}
               showPieChart={true}
+              size="chartWide"
             />
           )}
 
-          {netPayout && (
+          {hasNetPayoutData && (
             <ExpandableTiles
               title="Net Payout"
-              totalAmount={String(netPayout.value ?? 0)}
-              data={getNetPayoutData(netPayout)}
+              totalAmount={String(getMetricValue(netPayout?.value))}
+              data={netPayoutData}
               showRupeeIcon={true}
               showPieChart={true}
+              size="chartWide"
             />
           )}
 
@@ -1814,6 +2617,12 @@ function SoaAnalyser({
             reference={selectedMonthReference}
             monthwiseReferenceReports={monthwiseRef}
           />
+        </div>
+      )}
+
+      {!isCompareMode && !hasDetailSections && (
+        <div className="mx-auto w-full max-w-2xl rounded-2xl border border-dashed border-bd-border bg-white p-6 text-center text-xs font-semibold text-black">
+          Detailed analytics are not available for this report.
         </div>
       )}
 
@@ -1837,6 +2646,41 @@ type Service = {
   key_strategies: KeyStrategy[];
 };
 
+const GROW_SAFE_MATERIAL_ICONS = new Set([
+  "ads_click",
+  "analytics",
+  "bar_chart",
+  "campaign",
+  "design_services",
+  "diversity_3",
+  "groups",
+  "insights",
+  "lightbulb",
+  "local_offer",
+  "loyalty",
+  "manage_search",
+  "menu_book",
+  "paid",
+  "psychology",
+  "query_stats",
+  "rocket_launch",
+  "sell",
+  "star",
+  "storefront",
+  "support_agent",
+  "tips_and_updates",
+  "trending_up",
+  "verified",
+]);
+
+function getGrowIconName(icon: string | null | undefined, fallback = "trending_up") {
+  const normalized = String(icon || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  return GROW_SAFE_MATERIAL_ICONS.has(normalized) ? normalized : fallback;
+}
+
 function Grow() {
   const [services, setServices] = useState<Service[]>([]);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
@@ -1858,7 +2702,7 @@ function Grow() {
         }
       })
       .catch((err) => {
-        console.error("Error fetching services:", getApiErrorMessage(err, "Failed to fetch services."));
+        logApiIssue("error", "Error fetching services", err, "Failed to fetch services.");
       })
       .finally(() => {
         if (activeRequest) {
@@ -1888,7 +2732,7 @@ function Grow() {
         setToast({ message: "Failed to submit enquiry.", type: "error" });
       }
     } catch (err) {
-      console.error("Failed to submit enquiry:", getApiErrorMessage(err, "Failed to submit enquiry. Please try again."));
+      logApiIssue("error", "Failed to submit enquiry", err, "Failed to submit enquiry. Please try again.");
       setToast({ message: getApiErrorMessage(err, "Failed to submit enquiry. Please try again."), type: "error" });
     } finally {
       setEnquirySubmitting(false);
@@ -1929,39 +2773,45 @@ function Grow() {
 
   return (
     <div data-testid="grow" className="space-y-6">
+      {services.length === 0 && (
+        <div className="rounded-2xl border border-dashed border-neutral-200 bg-white p-8 text-center">
+          <p className="font-display text-lg font-semibold text-black">No growth services available</p>
+          <p className="mt-1 text-sm text-black/55">Please check again later or send an enquiry from the dashboard header.</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {services.map((service) => (
           <div
             key={service.id}
             onClick={() => setSelectedService(service)}
-            className="group relative cursor-pointer flex flex-col justify-between rounded-3xl border border-bd-border bg-bd-section p-6 shadow-sm hover:shadow-md hover:border-bd-teal/20 transition duration-300 ease-in-out"
+            className="group relative flex cursor-pointer flex-col justify-between rounded-2xl border border-neutral-200/80 bg-white p-5 shadow-sm transition duration-200 ease-in-out hover:border-neutral-300 hover:shadow-md"
           >
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-bd-mint/10 text-bd-teal">
-                  <span className="material-icons select-none text-2xl">
-                    {service.key_strategies?.[0]?.icon?.trim() || "trending_up"}
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-neutral-100 bg-neutral-50 text-black/70">
+                  <span className="material-icons select-none text-xl" aria-hidden="true">
+                    {getGrowIconName(service.key_strategies?.[0]?.icon, "trending_up")}
                   </span>
                 </div>
               </div>
               <div>
-                <h4 className="font-display text-lg font-extrabold text-bd-tealDeep group-hover:text-bd-teal transition duration-200">
+                <h4 className="font-display text-lg font-semibold text-black transition duration-200 group-hover:text-black/80">
                   {service.name}
                 </h4>
-                <p className="mt-1.5 text-xs text-bd-inkSoft leading-relaxed line-clamp-3">
+                <p className="mt-1.5 line-clamp-3 text-sm leading-relaxed text-black/55">
                   {service.overview}
                 </p>
               </div>
             </div>
 
-            <div className="mt-6 pt-4 border-t border-neutral-100/60 flex items-center justify-between text-bd-teal">
+            <div className="mt-6 flex items-center justify-between border-t border-neutral-100 pt-4 text-black/65">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedService(service);
                 }}
-                className="text-xs font-bold uppercase tracking-wider group-hover:text-bd-tealLight transition duration-200"
+                className="text-xs font-semibold uppercase tracking-wider transition duration-200 group-hover:text-black"
               >
                 Know More
               </button>
@@ -1972,38 +2822,34 @@ function Grow() {
       </div>
 
       {selectedService && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/40 backdrop-blur-sm p-4 overflow-y-auto">
-          <div className="relative w-full max-w-2xl rounded-3xl border border-neutral-200/80 bg-white p-6 sm:p-8 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-neutral-950/20 p-4 backdrop-blur-md">
+          <div className="relative max-h-[90vh] w-full max-w-2xl space-y-5 overflow-y-auto rounded-2xl border border-neutral-200/70 bg-white/90 p-6 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200 sm:p-8">
             <div>
-              <div className="flex items-center gap-2 text-bd-teal mb-1.5">
-                <Sparkles size={16} className="fill-bd-mint text-bd-mint animate-pulse" />
-                <span className="text-xs font-bold uppercase tracking-wider text-bd-teal">Service Strategy Details</span>
-              </div>
-              <h3 className="font-display text-2xl sm:text-3xl font-extrabold text-bd-tealDeep pr-8">{selectedService.name}</h3>
+              <h3 className="pr-8 font-display text-2xl font-semibold text-black sm:text-3xl">{selectedService.name}</h3>
             </div>
 
             <div className="space-y-4">
-              <div className="rounded-2xl bg-neutral-50 border border-neutral-100 p-4 sm:p-5">
-                <h4 className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2">Overview</h4>
-                <p className="text-sm text-bd-inkSoft leading-relaxed font-medium">{selectedService.overview}</p>
+              <div className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4 sm:p-5">
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-neutral-400">Overview</h4>
+                <p className="text-sm font-normal leading-relaxed text-black/65">{selectedService.overview}</p>
               </div>
 
               <div>
-                <h4 className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3 px-1">Key Strategies</h4>
+                <h4 className="mb-3 px-1 text-xs font-semibold uppercase tracking-wider text-neutral-400">Key Strategies</h4>
                 <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
                   {selectedService.key_strategies.map((strat, sidx) => (
                     <div
                       key={sidx}
-                      className="flex gap-3.5 p-4 rounded-2xl border border-bd-border bg-white hover:border-bd-teal/30 hover:shadow-sm transition duration-200"
+                      className="flex gap-3.5 rounded-2xl border border-neutral-200/80 bg-white p-4 transition duration-200 hover:border-neutral-300 hover:shadow-sm"
                     >
-                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-bd-mint/10 text-bd-teal">
-                        <span className="material-icons select-none text-2xl">
-                          {strat.icon?.trim() || "star"}
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-neutral-100 bg-neutral-50 text-black/70">
+                        <span className="material-icons select-none text-xl" aria-hidden="true">
+                          {getGrowIconName(strat.icon, "star")}
                         </span>
                       </div>
                       <div className="space-y-1">
-                        <h5 className="font-display text-sm font-bold text-bd-tealDeep">{strat.strategy}</h5>
-                        <p className="text-xs text-bd-inkSoft leading-relaxed">{strat.description}</p>
+                        <h5 className="font-display text-sm font-semibold text-black">{strat.strategy}</h5>
+                        <p className="text-xs leading-relaxed text-black/55">{strat.description}</p>
                       </div>
                     </div>
                   ))}
@@ -2011,17 +2857,9 @@ function Grow() {
               </div>
             </div>
 
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => setSelectedService(null)}
-                className="rounded-full bg-bd-tealDeep hover:bg-bd-tealLight px-6 py-2.5 text-sm font-bold text-white shadow-sm transition"
-              >
-                Close
-              </button>
-            </div>
             <button
               onClick={() => setSelectedService(null)}
-              className="absolute right-6 top-6 p-2 rounded-xl bg-neutral-50 hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900 border border-neutral-200/60 transition duration-200"
+              className="absolute right-6 top-6 rounded-xl border border-neutral-200/60 bg-white p-2 text-neutral-500 transition duration-200 hover:bg-neutral-50 hover:text-neutral-900"
               aria-label="Close details"
             >
               <X size={18} />
@@ -2032,15 +2870,15 @@ function Grow() {
 
       {/* Transparent Enquiry Popup Modal */}
       {showEnquiryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/20 backdrop-blur-md p-4 overflow-y-auto">
-          <div className="relative w-full max-w-lg rounded-3xl border border-white/20 bg-white/80 backdrop-blur-xl p-6 sm:p-8 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-neutral-950/20 p-4 backdrop-blur-md">
+          <div className="relative max-h-[90vh] w-full max-w-lg space-y-6 overflow-y-auto rounded-2xl border border-neutral-200/70 bg-white/90 p-6 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200 sm:p-8">
             <div>
-              <h3 className="font-display text-2xl sm:text-3xl font-extrabold text-bd-tealDeep">How can we help?</h3>
+              <h3 className="font-display text-2xl font-semibold text-black sm:text-3xl">How can we help?</h3>
             </div>
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2.5 px-1">
+                <label className="mb-2.5 block px-1 text-xs font-semibold uppercase tracking-wider text-neutral-400">
                   Select Services (Multiple)
                 </label>
                 <div className="grid grid-cols-1 gap-2">
@@ -2050,8 +2888,8 @@ function Grow() {
                       <label
                         key={service.id}
                         className={`flex items-center gap-3 p-3.5 rounded-2xl border cursor-pointer select-none transition duration-200 ${isSelected
-                            ? "bg-bd-mint/15 border-bd-teal text-bd-tealDeep font-bold"
-                            : "bg-white/40 border-neutral-200/60 hover:bg-white/60 text-bd-inkSoft hover:text-neutral-900"
+                            ? "border-neutral-900 bg-neutral-50 text-black font-medium"
+                            : "border-neutral-200/80 bg-white text-black/60 hover:bg-neutral-50 hover:text-black"
                           }`}
                       >
                         <input
@@ -2064,7 +2902,7 @@ function Grow() {
                               setSelectedServiceIds([...selectedServiceIds, service.id]);
                             }
                           }}
-                          className="h-4 w-4 rounded border-neutral-300 text-bd-teal focus:ring-bd-teal"
+                          className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900"
                         />
                         <span className="text-sm">{service.name}</span>
                       </label>
@@ -2074,7 +2912,7 @@ function Grow() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-neutral-400 uppercase tracking-wider mb-2 px-1">
+                <label className="mb-2 block px-1 text-xs font-semibold uppercase tracking-wider text-neutral-400">
                   Additional Comments
                 </label>
                 <textarea
@@ -2082,7 +2920,7 @@ function Grow() {
                   onChange={(e) => setEnquiryComments(e.target.value)}
                   placeholder="Tell us more about your restaurant's goals, current problems, or requirements..."
                   rows={4}
-                  className="w-full rounded-2xl border border-neutral-200 bg-white/40 p-4 text-sm text-bd-inkSoft outline-none focus:border-bd-teal focus:ring-1 focus:ring-bd-teal placeholder-neutral-400/80 transition"
+                  className="w-full rounded-2xl border border-neutral-200 bg-white p-4 text-sm text-black/70 outline-none transition placeholder-neutral-400/80 focus:border-neutral-500 focus:ring-1 focus:ring-neutral-500"
                 />
               </div>
             </div>
@@ -2094,14 +2932,14 @@ function Grow() {
                   setSelectedServiceIds([]);
                   setEnquiryComments("");
                 }}
-                className="flex-1 rounded-full border border-neutral-200/80 bg-white/60 py-2.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50 transition"
+                className="flex-1 rounded-full border border-neutral-200/80 bg-white py-2.5 text-xs font-semibold text-neutral-700 transition hover:bg-neutral-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSendEnquiry}
                 disabled={enquirySubmitting || selectedServiceIds.length === 0}
-                className="flex-1 rounded-full bg-bd-tealDeep hover:bg-bd-tealLight py-2.5 text-xs font-bold text-white shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex-1 rounded-full bg-black py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {enquirySubmitting ? "Submitting..." : "Submit Enquiry"}
               </button>
@@ -2112,7 +2950,7 @@ function Grow() {
                 setSelectedServiceIds([]);
                 setEnquiryComments("");
               }}
-              className="absolute right-6 top-6 p-2 rounded-xl bg-white/60 hover:bg-white/90 text-neutral-500 hover:text-neutral-900 border border-neutral-200/60 transition duration-200"
+              className="absolute right-6 top-6 rounded-xl border border-neutral-200/60 bg-white p-2 text-neutral-500 transition duration-200 hover:bg-neutral-50 hover:text-neutral-900"
               aria-label="Close modal"
             >
               <X size={18} />
@@ -2418,9 +3256,8 @@ function MyTickets() {
         setError("Failed to fetch tickets");
       }
     } catch (err) {
-      console.error(err);
-      const axiosError = err as { response?: { data?: { error?: string; message?: string } } };
-      const errMsg = axiosError.response?.data?.error || axiosError.response?.data?.message || "Failed to load tickets. Please try again.";
+      logApiIssue("error", "Failed to load tickets", err, "Failed to load tickets. Please try again.");
+      const errMsg = getApiErrorMessage(err, "Failed to load tickets. Please try again.");
       setError(errMsg);
     } finally {
       setLoading(false);
@@ -2433,11 +3270,21 @@ function MyTickets() {
 
   const getStatusStyle = (status: string) => {
     switch (status) {
-      case "active": return "bg-blue-50 text-blue-700 border-blue-200";
-      case "completed": return "bg-emerald-50 text-emerald-700 border-emerald-200";
-      case "cancelled": return "bg-amber-50 text-amber-700 border-amber-200";
-      case "rejected": return "bg-red-50 text-red-700 border-red-200";
-      default: return "bg-neutral-50 text-neutral-600 border-neutral-200";
+      case "active": return "border-blue-100 bg-blue-50 text-blue-700";
+      case "completed": return "border-emerald-100 bg-emerald-50 text-emerald-700";
+      case "cancelled": return "border-amber-100 bg-amber-50 text-amber-700";
+      case "rejected": return "border-red-100 bg-red-50 text-red-700";
+      default: return "border-neutral-100 bg-neutral-50 text-neutral-600";
+    }
+  };
+
+  const getStatusLabel = (status: string) => {
+    switch (status) {
+      case "active": return "In progress";
+      case "completed": return "Completed";
+      case "cancelled": return "Cancelled";
+      case "rejected": return "Rejected";
+      default: return status || "Unknown";
     }
   };
 
@@ -2456,20 +3303,38 @@ function MyTickets() {
 
   if (loading) {
     return (
-      <div className="flex h-48 items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" />
+      <div className="space-y-4" data-testid="tickets-section">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {[1, 2, 3].map((item) => (
+            <div key={item} className="animate-pulse rounded-2xl border border-neutral-200/80 bg-white p-5">
+              <div className="flex items-center justify-between">
+                <div className="h-4 w-24 rounded bg-neutral-200" />
+                <div className="h-6 w-20 rounded-full bg-neutral-200" />
+              </div>
+              <div className="mt-5 h-5 w-2/3 rounded bg-neutral-200" />
+              <div className="mt-3 space-y-2">
+                <div className="h-3 w-full rounded bg-neutral-200" />
+                <div className="h-3 w-4/5 rounded bg-neutral-200" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="rounded-2xl border border-red-200 bg-red-50/50 p-6 text-center">
-        <p className="text-sm font-semibold text-red-700">{error}</p>
+      <div className="rounded-2xl border border-red-100 bg-red-50/70 p-8 text-center" data-testid="tickets-section">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl border border-red-100 bg-white text-red-600">
+          <Ticket size={18} />
+        </div>
+        <p className="mt-4 text-sm font-medium text-red-700">{error}</p>
         <button
           onClick={fetchCallbacks}
-          className="btn-teal mt-4 rounded-xl px-4 py-2 text-xs font-bold"
+          className="mt-5 inline-flex items-center gap-2 rounded-full bg-black px-4 py-2 text-xs font-semibold text-white transition hover:bg-black/80"
         >
+          <RefreshCw size={13} />
           Retry
         </button>
       </div>
@@ -2477,52 +3342,63 @@ function MyTickets() {
   }
 
   return (
-    <div className="space-y-6" data-testid="tickets-section">
-      <div className="flex items-center justify-between border-b border-bd-border pb-4">
+    <div className="space-y-5" data-testid="tickets-section">
+      <div className="flex flex-col gap-3 rounded-2xl border border-neutral-200/80 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-bd-inkSoft">Track and manage your requests</h2>
+          <h2 className="font-display text-xl font-semibold text-black">Support Requests</h2>
+          <p className="mt-1 text-sm text-black/55">Track service enquiries, callbacks, and support status.</p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-medium text-black/60">
+          <Ticket size={14} />
+          <span>{callbacks.length} {callbacks.length === 1 ? "ticket" : "tickets"}</span>
         </div>
       </div>
 
       {callbacks.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-bd-border p-8 text-center text-sm text-bd-inkSoft">
-          No callback tickets found.
+        <div className="rounded-2xl border border-dashed border-neutral-200 bg-white p-10 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-neutral-100 bg-neutral-50 text-black/55">
+            <MessageSquareText size={20} />
+          </div>
+          <p className="mt-4 font-display text-lg font-semibold text-black">No tickets yet</p>
+          <p className="mt-1 text-sm text-black/55">Your callback and service requests will appear here once submitted.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {callbacks.map((t) => {
             const subject = t.services && t.services.length > 0
               ? t.services.map((s) => s.name).join(", ")
               : "Callback Request";
+            const serviceCount = t.services?.length || 0;
 
             return (
               <div
                 key={t.id}
-                className="bg-bd-section border border-bd-border p-5 rounded-2xl transition duration-200 hover:shadow-md hover:border-neutral-300 flex flex-col justify-between"
+                className="flex min-h-56 flex-col justify-between rounded-2xl border border-neutral-200/80 bg-white p-5 shadow-sm transition duration-200 hover:border-neutral-300 hover:shadow-md"
               >
                 <div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-medium text-bd-inkSoft tracking-wider">Ticket ID: #{t.id}</span>
-                    <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full border ${getStatusStyle(t.status)}`}>
-                      {t.status}
+                    <span className="text-[11px] font-medium uppercase tracking-wider text-black/45">Ticket #{t.id}</span>
+                    <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${getStatusStyle(t.status)}`}>
+                      {getStatusLabel(t.status)}
                     </span>
                   </div>
-                  <h4 className="font-display text-sm font-semibold text-bd-tealDeep mt-1.5 line-clamp-2">{subject}</h4>
-                  <p className="text-xs text-bd-inkSoft mt-1.5 line-clamp-3 italic">
-                    &ldquo;{t.comments || "No comments provided."}&rdquo;
+                  <h4 className="mt-4 line-clamp-2 font-display text-lg font-semibold leading-tight text-black">{subject}</h4>
+                  <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-black/55">
+                    {t.comments || "No comments provided."}
                   </p>
                   {t.services && t.services.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-3">
+                    <div className="mt-4 flex flex-wrap gap-1.5">
                       {t.services.map((s) => (
-                        <span key={s.id} className="bg-bd-mint/20 text-bd-tealDeep text-[9px] font-medium px-2 py-0.5 rounded border border-bd-mint/30">
+                        <span key={s.id} className="rounded-full border border-neutral-200 bg-neutral-50 px-2.5 py-1 text-[10px] font-medium text-black/60">
                           {s.name}
                         </span>
                       ))}
                     </div>
                   )}
                 </div>
-                <div className="flex justify-end text-[10px] text-bd-inkSoft mt-4 pt-2.5 border-t border-neutral-100/60">
+                <div className="mt-5 flex items-center justify-between border-t border-neutral-100 pt-3 text-xs text-black/45">
                   <span>{formatDate(t.createdAt)}</span>
+                  <span>{serviceCount} {serviceCount === 1 ? "service" : "services"}</span>
                 </div>
               </div>
             );
@@ -2537,20 +3413,49 @@ const TOOLS = [
   { key: "menu", title: "Menu Price Calculator", desc: "Cost + overhead + margin → suggested price.", icon: Calculator, C: MenuPriceCalc },
   { key: "food", title: "Food Cost Calculator", desc: "Coming soon.", icon: Receipt, C: () => null, locked: true },
   { key: "recipe", title: "Recipe Management", desc: "Save recipes with auto-priced suggestions.", icon: ChefHat, C: RecipeMgmt },
-  { key: "soa", title: "Financial Analytics", desc: "Latest Analytics", icon: FileText, C: SoaAnalyser },
+  { key: "soa", title: "Financial Analyser", desc: "Latest Analytics", icon: FileText, C: SoaAnalyser },
   { key: "appt", title: "Book Appointment", desc: "Schedule a session with a BizzDeck expert.", icon: CalendarCheck2, C: () => null },
   { key: "grow", title: "Grow Your Business", desc: "Curated, high-impact tactics for restaurants.", icon: TrendingUp, C: Grow },
   { key: "report", title: "Business Report", desc: "Generate a board-ready performance report.", icon: FileBarChart2, C: Reports },
   { key: "tickets", title: "My Tickets", desc: "Track and manage your support tickets and requests.", icon: Ticket, C: MyTickets },
   { key: "profile", title: "My Profile", desc: "View and manage your account details.", icon: UserCircle, C: ProfileSection },
 ];
+
+const DASHBOARD_SECTION_SLUGS: Record<string, string> = {
+  menu: "menu-price-calculator",
+  food: "food-cost-calculator",
+  recipe: "recipe-management",
+  soa: "financial-analyser",
+  appt: "book-appointment",
+  grow: "grow-your-business",
+  report: "business-report",
+  tickets: "my-tickets",
+  profile: "my-profile",
+};
+
+const DASHBOARD_SECTION_KEYS = Object.entries(DASHBOARD_SECTION_SLUGS).reduce<Record<string, string>>((acc, [key, slug]) => {
+  acc[slug] = key;
+  return acc;
+}, {});
+
+function getToolPath(key: string) {
+  return `/dashboard/${DASHBOARD_SECTION_SLUGS[key] || DASHBOARD_SECTION_SLUGS.menu}`;
+}
+
+function getDashboardSectionKey(pathname: string | null) {
+  const segment = pathname?.split("/").filter(Boolean)[1];
+  return segment ? DASHBOARD_SECTION_KEYS[segment] || "menu" : "menu";
+}
+
 export default function DashboardPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const { user, loading, logout } = useAuth();
-  const [active, setActive] = useState("menu");
+  const [active, setActive] = useState(() => getDashboardSectionKey(typeof window !== "undefined" ? window.location.pathname : null));
   const [latestAnalyticsLabel, setLatestAnalyticsLabel] = useState("Latest Analytics");
   const [soaMonthOptions, setSoaMonthOptions] = useState<SoaMonthOption[]>([]);
   const [soaSelectedAnalysisId, setSoaSelectedAnalysisId] = useState("");
+  const [isSalesAnalyticsOpen, setIsSalesAnalyticsOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [selectedRest, setSelectedRest] = useState<Restaurant | null>(() => {
     if (typeof window !== "undefined") {
@@ -2574,6 +3479,14 @@ export default function DashboardPage() {
   const restaurantList = useMemo(() => {
     return user?.restaurants || [];
   }, [user]);
+
+  useEffect(() => {
+    setActive(getDashboardSectionKey(pathname));
+  }, [pathname]);
+
+  useEffect(() => {
+    if (active !== "soa") setIsSalesAnalyticsOpen(false);
+  }, [active]);
 
   useEffect(() => {
     if (loading || !user) return;
@@ -2633,7 +3546,7 @@ export default function DashboardPage() {
         }
       })
       .catch((err) => {
-        console.error("Error fetching restaurant details:", getApiErrorMessage(err, "Failed to fetch restaurant details."));
+        logApiIssue("error", "Error fetching restaurant details", err, "Failed to fetch restaurant details.");
       });
 
     return () => {
@@ -2664,17 +3577,17 @@ export default function DashboardPage() {
       const isRestaurantPlanFree = selectedRestPlan === "free";
       if (isNoRestaurant || isRestaurantPlanFree) {
         if (active !== "tickets" && active !== "profile") {
-          setActive("profile");
+          router.replace(getToolPath("profile"));
         }
       }
     }
-  }, [loading, user, isNoRestaurant, selectedRestPlan, active]);
+  }, [loading, user, isNoRestaurant, selectedRestPlan, active, router]);
 
   if (loading || !user) {
     return <div className="flex min-h-[100svh] items-center justify-center bg-bd-bg"><div className="h-10 w-10 animate-spin rounded-full border-2 border-bd-border border-t-bd-teal" /></div>;
   }
 
-  const Active = TOOLS.find(t => t.key === active)!;
+  const Active = TOOLS.find(t => t.key === active) || TOOLS[0];
   const ActiveC = Active.C;
   const activeDescription = active === "soa" ? latestAnalyticsLabel : Active.desc;
   return (
@@ -2748,10 +3661,10 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <div className="w-full flex px-6 lg:px-8 py-8 gap-6 items-start">
+      <div className="flex h-[calc(100svh-57px)] w-full items-start gap-6 overflow-hidden px-6 py-8 lg:px-8">
         {/* Collapsible Left Sidebar (Modern & Minimal Card Panel) */}
         <aside
-          className={`flex flex-col gap-1.5 shrink-0 border border-bd-border bg-bd-section rounded-3xl p-4 shadow-sm transition-all duration-300 ease-in-out ${sidebarCollapsed ? "w-[80px]" : "w-[240px] sm:w-[280px]"
+          className={`flex h-full flex-col gap-1.5 shrink-0 overflow-hidden border border-bd-border bg-bd-section rounded-3xl p-4 shadow-sm transition-all duration-300 ease-in-out ${sidebarCollapsed ? "w-[80px]" : "w-[240px] sm:w-[280px]"
             }`}
         >
           <div className="flex items-center justify-between mb-5 border-b border-neutral-100/60 pb-3.5 px-1">
@@ -2770,6 +3683,7 @@ export default function DashboardPage() {
             {TOOLS.map((t) => {
               const Icon = t.icon;
               const on = t.key === active;
+              const menuTitle = t.key === "soa" ? "Analyser" : t.title;
               const isRestaurantPlanFree = selectedRestPlan === "free";
               const isLocked = t.locked ||
                 (isNoRestaurant && t.key !== "tickets" && t.key !== "profile") ||
@@ -2787,7 +3701,7 @@ export default function DashboardPage() {
                           setToast({ message: "No meeting link available for this restaurant.", type: "error" });
                         }
                       } else {
-                        setActive(t.key);
+                        router.push(getToolPath(t.key));
                       }
                     }
                   }}
@@ -2799,7 +3713,7 @@ export default function DashboardPage() {
                         ? "bg-white text-bd-tealDeep font-semibold shadow-sm border border-neutral-200/20"
                         : "text-neutral-500 hover:text-neutral-900 hover:bg-neutral-50"
                     }`}
-                  title={sidebarCollapsed ? t.title : undefined}
+                  title={sidebarCollapsed ? menuTitle : undefined}
                 >
                   <span className={`flex h-6 w-6 shrink-0 items-center justify-center transition-colors ${isLocked
                       ? "text-neutral-400"
@@ -2811,7 +3725,7 @@ export default function DashboardPage() {
                   </span>
                   {!sidebarCollapsed && (
                     <span className="font-medium ml-3 truncate transition-opacity duration-200 block flex-1">
-                      {t.title}
+                      {menuTitle}
                     </span>
                   )}
                   {!sidebarCollapsed && isLocked && (
@@ -2821,7 +3735,7 @@ export default function DashboardPage() {
                   )}
                   {sidebarCollapsed && (
                     <div className="absolute left-[76px] z-50 scale-0 group-hover:scale-100 transition-all origin-left duration-200 bg-bd-tealDeep text-white text-[11px] font-bold px-3 py-1.5 rounded-lg whitespace-nowrap shadow-xl border border-white/10">
-                      {t.title} {t.locked ? "(Coming Soon)" : (t.key !== "tickets" && t.key !== "profile" && (isNoRestaurant || isRestaurantPlanFree)) ? "(Locked)" : ""}
+                      {menuTitle} {t.locked ? "(Coming Soon)" : (t.key !== "tickets" && t.key !== "profile" && (isNoRestaurant || isRestaurantPlanFree)) ? "(Locked)" : ""}
                     </div>
                   )}
                 </button>
@@ -2830,8 +3744,9 @@ export default function DashboardPage() {
           </div>
         </aside>
 
-        <main className="flex-1 min-w-0 rounded-3xl border border-bd-border bg-bd-section p-6 sm:p-8">
-          <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-bd-border bg-bd-section p-6 sm:p-8">
+          {!(active === "soa" && isSalesAnalyticsOpen) && (
+          <div className="mb-6 flex shrink-0 flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
               <h1 className="font-display text-3xl font-bold tracking-tight text-bd-tealDeep sm:text-4xl">{Active.title}</h1>
               <p className="mt-1 text-sm text-bd-inkSoft">{activeDescription}</p>
@@ -2872,13 +3787,17 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-          <ActiveC
-            selectedRestaurant={selectedRest}
-            onLatestAnalyticsLabel={setLatestAnalyticsLabel}
-            selectedAnalysisId={active === "soa" ? soaSelectedAnalysisId : undefined}
-            onSelectedAnalysisIdChange={active === "soa" ? setSoaSelectedAnalysisId : undefined}
-            onMonthOptionsChange={active === "soa" ? setSoaMonthOptions : undefined}
-          />
+          )}
+          <div className="bd-hide-scrollbar min-h-0 flex-1 overflow-y-auto pr-1">
+            <ActiveC
+              selectedRestaurant={selectedRest}
+              onLatestAnalyticsLabel={setLatestAnalyticsLabel}
+              selectedAnalysisId={active === "soa" ? soaSelectedAnalysisId : undefined}
+              onSelectedAnalysisIdChange={active === "soa" ? setSoaSelectedAnalysisId : undefined}
+              onMonthOptionsChange={active === "soa" ? setSoaMonthOptions : undefined}
+              onSalesAnalyticsViewChange={active === "soa" ? setIsSalesAnalyticsOpen : undefined}
+            />
+          </div>
         </main>
       </div>
 

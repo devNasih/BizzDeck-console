@@ -3,7 +3,7 @@
 import * as React from "react";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import axios, { InternalAxiosRequestConfig, AxiosResponse, AxiosError } from "axios";
-import { getApiErrorMessage } from "@/lib/api";
+import { getApiErrorMessage, logApiIssue } from "@/lib/api";
 import { AuthModal } from "./AuthModal";
 
 declare global {
@@ -53,7 +53,7 @@ if (typeof window !== "undefined" && !window.__bizzdeckMsg91ErrorHandlersInstall
     if (isMsg91Error(event.reason)) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      console.warn("Suppressed external MSG91 unhandled Axios rejection:", event.reason);
+      logApiIssue("warn", "Suppressed external MSG91 unhandled Axios rejection", event.reason, "OTP request failed.");
     }
   }, { capture: true });
 
@@ -65,7 +65,7 @@ if (typeof window !== "undefined" && !window.__bizzdeckMsg91ErrorHandlersInstall
     ) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      console.warn("Suppressed external MSG91 script error:", event.message);
+      console.warn(`Suppressed external MSG91 script error: ${event.message || "OTP script failed."}`);
     }
   }, { capture: true });
 }
@@ -132,6 +132,10 @@ if (!runtimeState.__bizzdeckAxiosInterceptors) {
             }
           }
         }
+      }
+
+      if (error.response?.status === 401) {
+        logApiIssue("warn", "Unauthorized API request", error, "Your session has expired.");
       }
 
       return Promise.reject(error);
@@ -315,7 +319,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log("MSG91 success response:", data);
       },
       failure: (error: unknown) => {
-        console.error("MSG91 failure reason:", error);
+        logApiIssue("warn", "MSG91 failure reason", error, "OTP request failed.");
       },
     };
 
@@ -387,7 +391,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       localUser = JSON.parse(storedUser) as User;
     } catch (err) {
-      console.warn("Failed to parse stored user session:", err);
+      console.warn(`Failed to parse stored user session: ${err instanceof Error ? err.message : String(err)}`);
       localStorage.removeItem("token");
       localStorage.removeItem("refreshToken");
       localStorage.removeItem("user");
@@ -421,7 +425,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             profileData = profileRes.data.data;
           }
         } catch (profileErr) {
-          console.warn("Profile restore skipped:", getApiErrorMessage(profileErr, "Profile request timed out."));
+          logApiIssue("warn", "Profile restore skipped", profileErr, "Profile request timed out.");
         }
       }
 
@@ -453,7 +457,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(updatedUser);
       localStorage.setItem("user", JSON.stringify(updatedUser));
     } catch (err) {
-      console.warn("Failed to restore current user session:", getApiErrorMessage(err, "Session restore failed."));
+      logApiIssue("warn", "Failed to restore current user session", err, "Session restore failed.");
       const errorObj = err as { response?: { status?: number } } | null;
       if (errorObj?.response?.status === 401 || errorObj?.response?.status === 403 || errorObj?.response?.status === 404) {
         logout();
@@ -511,7 +515,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           finish(() => resolve());
         },
         (error: unknown) => {
-          console.error("MSG91 sendOtp failure:", error);
+          logApiIssue("warn", "MSG91 sendOtp failure", error, "Failed to send OTP via MSG91.");
           const errorObj = error as { message?: string } | null;
           finish(() => reject(new Error(errorObj?.message || "Failed to send OTP via MSG91. Please check the number and try again.")));
         }
@@ -670,19 +674,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                   setUser(nextUser);
                   localStorage.setItem("user", JSON.stringify(nextUser));
                 }).catch((profileErr) => {
-                  console.warn("Profile refresh after login skipped:", getApiErrorMessage(profileErr, "Profile request timed out."));
+                  logApiIssue("warn", "Profile refresh after login skipped", profileErr, "Profile request timed out.");
                 });
               }
             } else {
               finish(() => reject(new Error("Sign-in failed. Please try again.")));
             }
           } catch (err: unknown) {
-            console.error("Sign-in API call failed:", getApiErrorMessage(err, "Sign-in failed. Please try again."));
+            logApiIssue("error", "Sign-in API call failed", err, "Sign-in failed. Please try again.");
             finish(() => reject(new Error(getApiErrorMessage(err, "Sign-in failed. Please try again."))));
           }
         },
         (error: unknown) => {
-          console.error("MSG91 verifyOtp failure:", error);
+          logApiIssue("warn", "MSG91 verifyOtp failure", error, "Incorrect OTP.");
           const errorObj = error as { message?: string } | null;
           finish(() => reject(new Error(errorObj?.message || "Incorrect OTP. Please try again.")));
         }
@@ -708,7 +712,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             localRests = JSON.parse(stored);
           }
         } catch (e) {
-          console.error("Failed to parse local restaurants:", e);
+          console.error(`Failed to parse local restaurants: ${e instanceof Error ? e.message : String(e)}`);
         }
         localRests.push(newRest);
         localStorage.setItem(`local_restaurants_${user.id}`, JSON.stringify(localRests));
@@ -814,7 +818,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err: unknown) {
       const message = getApiErrorMessage(err, "Failed to create restaurant");
-      console.error("Failed to create restaurant:", message);
+      console.error(`Failed to create restaurant: ${message}`);
       throw new Error(message);
     }
   }, [user]);

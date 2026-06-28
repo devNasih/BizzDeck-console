@@ -68,7 +68,11 @@ export const metadata: Metadata = {
     follow: true,
     googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1 },
   },
-  icons: { icon: "/favicon.svg" },
+  icons: {
+    icon: "/assets/logo%20final.jpeg",
+    shortcut: "/assets/logo%20final.jpeg",
+    apple: "/assets/logo%20final.jpeg",
+  },
   category: "business",
 };
 
@@ -88,7 +92,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     "@type": "Organization",
     name: "BizzDeck",
     url: siteConfig.url,
-    logo: `${siteConfig.url}/favicon.svg`,
+    logo: `${siteConfig.url}/assets/logo%20final.jpeg`,
     sameAs: [],
   };
   const softwareJsonLd = {

@@ -106,6 +106,22 @@ body {
   .animate-marquee, .animate-pulse-ring { animation: none !important; }
 }
 
+.bd-hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.bd-hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.bd-recharts-pie,
+.bd-recharts-pie *,
+.recharts-sector {
+  outline: none !important;
+  -webkit-tap-highlight-color: transparent;
+}
+
 @media (max-width: 767px) {
   html,
   body {

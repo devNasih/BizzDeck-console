@@ -73,3 +73,8 @@ export function getApiErrorMessage(error: unknown, fallback = "Something went wr
 
   return fallback;
 }
+
+export function logApiIssue(level: "warn" | "error", label: string, error: unknown, fallback = "Something went wrong") {
+  const message = getApiErrorMessage(error, fallback);
+  console[level](`${label}: ${message}`);
+}

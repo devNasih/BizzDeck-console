@@ -11,7 +11,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { Button } from "@/components/ui/Button";
 import { TextField } from "@/components/ui/TextField";
 import { Toast } from "@/components/ui/Toast";
-import { getApiErrorMessage } from "@/lib/api";
+import { getApiErrorMessage, logApiIssue } from "@/lib/api";
 
 function AddRestaurantForm() {
   const router = useRouter();
@@ -59,7 +59,7 @@ function AddRestaurantForm() {
         throw new Error("Failed to fetch location data");
       }
     } catch (err: unknown) {
-      console.error(err);
+      logApiIssue("error", "Failed to fetch pincode locations", err, "Failed to fetch locations for this pincode");
       setToast({ message: getApiErrorMessage(err, "Failed to fetch locations for this pincode"), type: "error" });
       setLocalitiesList([]);
       setZonesList([]);
@@ -133,7 +133,7 @@ function AddRestaurantForm() {
           setZomatoCommission(d.expectedCommissionPercentageZomato?.toString() || "");
         }
     } catch (err) {
-      console.error("Error loading restaurant details:", err);
+      logApiIssue("error", "Error loading restaurant details", err, "Failed to load restaurant details.");
       setToast({ message: getApiErrorMessage(err, "Failed to load restaurant details."), type: "error" });
       } finally {
         setFetchingDetails(false);
@@ -295,7 +295,7 @@ function AddRestaurantForm() {
                 localStorage.setItem("selected_restaurant", JSON.stringify({ ...parsed, ...payload, id: Number(editId) }));
               }
             } catch (e) {
-              console.error("Local storage update error", e);
+              console.error(`Local storage update error: ${e instanceof Error ? e.message : String(e)}`);
             }
           }
           router.push("/dashboard/restaurants");
@@ -314,7 +314,7 @@ function AddRestaurantForm() {
         router.push("/dashboard");
       }
     } catch (err) {
-      console.error(err);
+      logApiIssue("error", isEditMode ? "Failed to update restaurant" : "Failed to create restaurant", err, isEditMode ? "Failed to update restaurant" : "Failed to create restaurant");
       setToast({
         message: getApiErrorMessage(err, isEditMode ? "Failed to update restaurant" : "Failed to create restaurant"),
         type: "error",

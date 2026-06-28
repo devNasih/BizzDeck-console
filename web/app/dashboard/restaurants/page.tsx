@@ -9,7 +9,7 @@ import axios from "axios";
 import { Store, MapPin, Edit3, Trash2, ArrowLeft, AlertTriangle } from "lucide-react";
 import { useAuth, Restaurant } from "@/components/auth/AuthProvider";
 import { Toast } from "@/components/ui/Toast";
-import { getApiErrorMessage } from "@/lib/api";
+import { getApiErrorMessage, logApiIssue } from "@/lib/api";
 
 export default function ManageRestaurantsPage() {
   const router = useRouter();
@@ -36,7 +36,7 @@ export default function ManageRestaurantsPage() {
         setError("Failed to fetch restaurants");
       }
     } catch (err: unknown) {
-      console.error(err);
+      logApiIssue("error", "Failed to load restaurants", err, "Failed to load restaurants. Please try again.");
       setError(getApiErrorMessage(err, "Failed to load restaurants. Please try again."));
     } finally {
       setLoading(false);
@@ -85,7 +85,7 @@ export default function ManageRestaurantsPage() {
               }
             }
           } catch (e) {
-            console.error("Local storage sync error during delete", e);
+            console.error(`Local storage sync error during delete: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
 
@@ -95,7 +95,7 @@ export default function ManageRestaurantsPage() {
         throw new Error(response.data?.message || "Failed to delete restaurant");
       }
     } catch (err: unknown) {
-      console.error(err);
+      logApiIssue("error", "Failed to delete restaurant", err, "Failed to delete restaurant. Please try again.");
       setToast({ message: getApiErrorMessage(err, "Failed to delete restaurant. Please try again."), type: "error" });
     } finally {
       setDeleting(false);
